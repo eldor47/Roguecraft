@@ -1,0 +1,2074 @@
+package com.eldor.roguecraft.managers;
+
+import com.eldor.roguecraft.RoguecraftPlugin;
+import com.eldor.roguecraft.models.Arena;
+import com.eldor.roguecraft.models.Run;
+import com.eldor.roguecraft.models.TeamRun;
+import com.eldor.roguecraft.models.Weapon;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Location;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Player;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.util.*;
+
+public class GameManager {
+    private final RoguecraftPlugin plugin;
+    private final Map<UUID, BukkitTask> runTasks;
+    private final Map<UUID, BukkitTask> spawnTasks;
+    private final Map<UUID, BukkitTask> regenTasks; // Regeneration tasks
+    private final Map<UUID, BukkitTask> healthDisplayTasks; // Health display for players
+    private final Map<UUID, Set<LivingEntity>> frozenMobs; // Track frozen mobs per team run
+    private final Map<UUID, Long> timeFreezeEndTime; // Track when time freeze ends for each team run (for new spawns)
+    private final Map<UUID, WorldBorderSettings> originalBorders; // Store original border settings per team
+    private final Set<Location> roguecraftSpawnLocations; // Track spawn locations for WorldGuard compatibility
+    private final Map<UUID, Long> lastDamageTime; // Track last damage time for regeneration proc system
+    private final Map<UUID, Integer> bossSpawnedWave; // Track which wave has spawned the boss for each team
+
+    public GameManager(RoguecraftPlugin plugin) {
+        this.plugin = plugin;
+        this.runTasks = new HashMap<>();
+        this.spawnTasks = new HashMap<>();
+        this.regenTasks = new HashMap<>();
+        this.healthDisplayTasks = new HashMap<>();
+        this.frozenMobs = new HashMap<>();
+        this.timeFreezeEndTime = new HashMap<>();
+        this.originalBorders = new HashMap<>();
+        this.roguecraftSpawnLocations = new HashSet<>();
+        this.lastDamageTime = new HashMap<>();
+        this.bossSpawnedWave = new HashMap<>();
+    }
+    
+    /**
+     * Check if a location is a Roguecraft spawn location (for WorldGuard compatibility)
+     */
+    public boolean isRoguecraftSpawnLocation(Location loc) {
+        if (loc == null) return false;
+        // Check if location is within 1 block of any tracked spawn location
+        for (Location spawnLoc : roguecraftSpawnLocations) {
+            if (spawnLoc != null && spawnLoc.getWorld().equals(loc.getWorld()) &&
+                spawnLoc.distanceSquared(loc) <= 4.0) { // 2 block radius
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Add a spawn location to tracking (for WorldGuard compatibility)
+     */
+    private void addSpawnLocation(Location loc) {
+        if (loc != null) {
+            Location cloned = loc.clone();
+            roguecraftSpawnLocations.add(cloned);
+            // Remove after 2 seconds (spawn event should fire immediately, but give buffer)
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                roguecraftSpawnLocations.remove(cloned);
+            }, 40L); // 2 seconds
+        }
+    }
+    
+    // Helper class to store world border settings
+    private static class WorldBorderSettings {
+        final Location center;
+        final double size;
+        final int warningDistance;
+        final int warningTime;
+        
+        WorldBorderSettings(org.bukkit.WorldBorder border) {
+            this.center = border.getCenter();
+            this.size = border.getSize();
+            this.warningDistance = border.getWarningDistance();
+            this.warningTime = border.getWarningTime();
+        }
+        
+        void restore(org.bukkit.WorldBorder border) {
+            border.setCenter(center);
+            border.setSize(size);
+            border.setWarningDistance(warningDistance);
+            border.setWarningTime(warningTime);
+        }
+    }
+
+    public boolean startRun(Player player, Arena arena) {
+        if (plugin.getRunManager().hasActiveRun(player)) {
+            player.sendMessage("§cYou already have an active run!");
+            return false;
+        }
+
+        if (arena == null) {
+            arena = plugin.getArenaManager().getDefaultArena();
+            if (arena == null) {
+                player.sendMessage("§cNo arena available!");
+                return false;
+            }
+        }
+
+        // Check if there's already a team run in this arena - join it
+        TeamRun existingTeam = plugin.getRunManager().getTeamRun(player);
+        if (existingTeam == null) {
+            existingTeam = plugin.getRunManager().startTeamRun(player, arena);
+        }
+
+        // Teleport player to arena
+        if (arena.getSpawnPoint() != null) {
+            player.teleport(arena.getSpawnPoint());
+        }
+
+        arena.setActive(true);
+        player.sendMessage("§aEntering the Arena Realm...");
+        player.sendMessage("§eSurvive the waves and close the rift!");
+        
+        if (existingTeam != null && existingTeam.getPlayerCount() > 1) {
+            player.sendMessage("§bJoined team of " + existingTeam.getPlayerCount() + " players!");
+        }
+
+        // Show weapon selection if this is a new team
+        UUID teamId = getTeamRunId(existingTeam);
+        final TeamRun finalTeamRun = existingTeam;
+        final Arena finalArena = arena;
+        
+        if (teamId != null && !runTasks.containsKey(teamId)) {
+            // Open weapon selection GUI for the first player
+            openWeaponSelection(player, weapon -> {
+                finalTeamRun.setWeapon(new Weapon(weapon));
+                
+                // Set up world border visualization
+                setupArenaBorder(finalTeamRun, finalArena, teamId);
+                
+                // Spawn physical shrines in arena
+                plugin.getShrineManager().spawnShrinesForRun(teamId, finalArena);
+                
+                // Start game loop
+                startGameLoop(finalTeamRun, finalArena);
+                
+                // Start aura effects
+                plugin.getAuraManager().startAuras(finalTeamRun);
+                
+                // Start synergy tracking
+                plugin.getSynergyManager().startSynergies(finalTeamRun);
+                
+                // Start auto-attack, XP bars, and apply initial stats for all players
+                for (Player p : finalTeamRun.getPlayers()) {
+                    if (p != null && p.isOnline()) {
+                        plugin.getWeaponManager().startAutoAttack(p, finalTeamRun.getWeapon());
+                        // Initialize XP bar
+                        com.eldor.roguecraft.util.XPBar.updateXPBar(p, 0, finalTeamRun.getExperienceToNextLevel(), 1, finalTeamRun.getWave());
+                        // Apply initial health
+                        applyInitialStats(p, finalTeamRun);
+                        // Start health display
+                        startHealthDisplay(p, finalTeamRun);
+                    }
+                }
+                
+                // Start mob health display updates
+                startMobHealthDisplay(finalTeamRun);
+            });
+        } else if (existingTeam != null && existingTeam.getWeapon() != null) {
+            // Join existing team and start auto-attack
+            plugin.getWeaponManager().startAutoAttack(player, existingTeam.getWeapon());
+            // Initialize XP bar for joining player
+            com.eldor.roguecraft.util.XPBar.updateXPBar(
+                player,
+                existingTeam.getExperience(),
+                existingTeam.getExperienceToNextLevel(),
+                existingTeam.getLevel(),
+                existingTeam.getWave()
+            );
+            // Apply initial health
+            applyInitialStats(player, existingTeam);
+            // Start health display
+            startHealthDisplay(player, existingTeam);
+        }
+
+        return true;
+    }
+    
+    private void openWeaponSelection(Player player, java.util.function.Consumer<Weapon.WeaponType> onSelect) {
+        com.eldor.roguecraft.gui.WeaponSelectionGUI gui = 
+            new com.eldor.roguecraft.gui.WeaponSelectionGUI(plugin, player, onSelect);
+        gui.open();
+    }
+    
+    private void applyInitialStats(Player player, TeamRun teamRun) {
+        // Apply initial health
+        double health = teamRun.getStat("health");
+        org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
+        org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
+        if (healthInstance != null) {
+            healthInstance.setBaseValue(health);
+            player.setHealth(health);
+        }
+        
+        // Apply initial speed
+        double speed = teamRun.getStat("speed");
+        double baseSpeed = 0.1;
+        double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
+        org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
+        org.bukkit.attribute.AttributeInstance speedInstance = player.getAttribute(speedAttr);
+        if (speedInstance != null) {
+            speedInstance.setBaseValue(newSpeed);
+        }
+        
+        // Apply initial armor (visible in HUD like hearts)
+        double armor = teamRun.getStat("armor");
+        org.bukkit.attribute.Attribute armorAttr = org.bukkit.attribute.Attribute.GENERIC_ARMOR;
+        org.bukkit.attribute.AttributeInstance armorInstance = player.getAttribute(armorAttr);
+        if (armorInstance != null) {
+            armorInstance.setBaseValue(armor);
+        }
+        
+        // Set hunger to max and saturation (prevents hunger during runs)
+        player.setFoodLevel(20);
+        player.setSaturation(20.0f);
+        player.setExhaustion(0.0f);
+    }
+    
+    private void startHealthDisplay(Player player, TeamRun teamRun) {
+        // Display health on action bar every 10 ticks (0.5 seconds)
+        BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!player.isOnline() || !teamRun.isActive()) {
+                return;
+            }
+            
+            double currentHealth = player.getHealth();
+            double maxHealth = teamRun.getStat("health");
+            
+            // Build health bar with hearts
+            String healthBar = ChatColor.RED + "❤ " + 
+                              ChatColor.WHITE + String.format("%.1f", currentHealth) + 
+                              ChatColor.GRAY + "/" + 
+                              ChatColor.WHITE + String.format("%.1f", maxHealth);
+            
+            // Send action bar message
+            player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(healthBar));
+        }, 0L, 10L);
+        
+        // Store task so we can cancel it later
+        healthDisplayTasks.put(player.getUniqueId(), task);
+    }
+    
+    private void setupArenaBorder(TeamRun teamRun, Arena arena, UUID teamId) {
+        if (arena.getCenter() == null || arena.getWorld() == null) {
+            return;
+        }
+
+        // Set world border using the world's border (affects all players in that world)
+        org.bukkit.WorldBorder border = arena.getWorld().getWorldBorder();
+        
+        // Store original settings for later restoration
+        originalBorders.put(teamId, new WorldBorderSettings(border));
+        
+        // Set new border for arena visualization
+        // Use arena spawn point (where players start) as the center for accurate positioning
+        // This ensures the border is centered on where players actually are
+        Location borderCenter = arena.getSpawnPoint();
+        if (borderCenter == null) {
+            borderCenter = arena.getCenter(); // Fallback to center if spawn not set
+        }
+        if (borderCenter == null) {
+            return; // Can't set border without a location
+        }
+        
+        border.setCenter(borderCenter);
+        
+        // World border size is diameter, but we want to ensure players can't leave
+        // Set size to slightly smaller than radius*2 to account for player collision box
+        // Player collision is ~0.6 blocks, so we subtract more to ensure they can't leave
+        // Subtract 4 blocks total (2 blocks margin on each side) to be safe
+        double borderDiameter = (arena.getRadius() * 2) - 4.0; // Subtract 4 blocks total for safety margin
+        border.setSize(Math.max(1.0, borderDiameter)); // Ensure minimum size of 1.0
+        
+        border.setWarningDistance(0); // No warning distance
+        border.setWarningTime(0);
+        border.setDamageAmount(0); // Don't damage players
+        border.setDamageBuffer(0);
+        
+        // Notify all players
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline()) {
+                player.sendMessage("§bWorld border visible - this is your arena!");
+                player.sendMessage("§7Border radius: " + String.format("%.1f", arena.getRadius()) + " blocks");
+            }
+        }
+    }
+    
+    private void removeArenaBorder(TeamRun teamRun, Arena arena) {
+        if (arena == null || arena.getWorld() == null) {
+            return;
+        }
+
+        UUID teamId = getTeamRunId(teamRun);
+        WorldBorderSettings original = originalBorders.remove(teamId);
+        
+        org.bukkit.WorldBorder border = arena.getWorld().getWorldBorder();
+        
+        if (original != null) {
+            // Restore original world border settings
+            original.restore(border);
+        } else {
+            // If no original settings stored, just turn off the border (set to max size)
+            // This makes it effectively disappear
+            border.setSize(29999984.0); // Max world border size (effectively off)
+            border.setCenter(0, 0); // Reset center
+            border.setWarningDistance(5);
+            border.setWarningTime(15);
+            border.setDamageAmount(0.2);
+            border.setDamageBuffer(5.0);
+        }
+        
+        // Notify players
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline()) {
+                player.sendMessage("§7Arena border removed.");
+            }
+        }
+    }
+
+    private UUID getTeamRunId(TeamRun teamRun) {
+        if (teamRun == null || teamRun.getPlayers().isEmpty()) {
+            return null;
+        }
+        // Use first player's UUID as team ID
+        return teamRun.getPlayers().get(0).getUniqueId();
+    }
+    
+    /**
+     * Set the last damage time for a player (used for regeneration proc system)
+     */
+    public void setLastDamageTime(UUID playerId, long time) {
+        lastDamageTime.put(playerId, time);
+    }
+
+    private void startGameLoop(TeamRun teamRun, Arena arena) {
+        UUID teamId = getTeamRunId(teamRun);
+
+        // Regeneration task - applies regeneration stat to all players with proc system
+        // Use a counter to track visual feedback timing
+        final java.util.Map<UUID, Integer> regenTickCounters = new java.util.HashMap<>();
+        
+        BukkitTask regenTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) {
+                return;
+            }
+            
+            double regeneration = teamRun.getStat("regeneration");
+            if (regeneration > 0) {
+                for (Player player : teamRun.getPlayers()) {
+                    if (player != null && player.isOnline() && !player.isDead()) {
+                        UUID playerId = player.getUniqueId();
+                        long lastDamage = lastDamageTime.getOrDefault(playerId, 0L);
+                        long timeSinceDamage = System.currentTimeMillis() - lastDamage;
+                        
+                        // Calculate proc delay based on regeneration stat
+                        // Base delay: 1.0 second, reduced by 0.1s per point of regen
+                        // Minimum delay: 0.2 seconds
+                        double procDelaySeconds = Math.max(0.2, 1.0 - (regeneration * 0.1));
+                        long procDelayMs = (long) (procDelaySeconds * 1000);
+                        
+                        // Only heal if enough time has passed since last damage
+                        if (timeSinceDamage >= procDelayMs) {
+                            double currentHealth = player.getHealth();
+                            double maxHealth = teamRun.getStat("health");
+                            
+                            // Heal based on regeneration stat (HP per second)
+                            // Cap at 2 hearts (4 HP) per second - fixed value to prevent invincibility
+                            double healAmount = Math.min(regeneration, 4.0); // Cap at 4 HP per second
+                            double newHealth = Math.min(maxHealth, currentHealth + healAmount);
+                            
+                            if (newHealth > currentHealth) {
+                                player.setHealth(newHealth);
+                                
+                                // Visual feedback every 2 seconds (40 ticks)
+                                int tickCount = regenTickCounters.getOrDefault(playerId, 0) + 1;
+                                regenTickCounters.put(playerId, tickCount);
+                                
+                                if (tickCount >= 40) { // Every 2 seconds
+                                    player.getWorld().spawnParticle(org.bukkit.Particle.HEART, player.getLocation().add(0, 1, 0), 2, 0.3, 0.3, 0.3, 0);
+                                    regenTickCounters.put(playerId, 0); // Reset counter
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }, 0L, 20L); // Every second (20 ticks)
+
+        // Main game loop task
+        BukkitTask gameTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            // Refresh players list
+            teamRun.getPlayers().removeIf(p -> p == null || !p.isOnline());
+            
+            if (!teamRun.isActive() || teamRun.getPlayerCount() == 0) {
+                endTeamRun(teamId, arena);
+                return;
+            }
+
+            // Arena edge detection removed - world border prevents players from leaving
+            // Players can only end the run by dying, using /rc stop, or leaving the server
+
+            // Update difficulty with multiplayer scaling
+            long elapsedMinutes = teamRun.getElapsedTime() / 60000;
+            long elapsedSeconds = teamRun.getElapsedTime() / 1000;
+            
+            // Get max wave from config
+            int maxWave = plugin.getConfigManager().getBalanceConfig().getInt("waves.max-wave", 20);
+            boolean isInfiniteMode = maxWave > 0 && teamRun.getWave() > maxWave;
+            
+            // Don't advance waves if any player is in GUI (pause wave progression)
+            if (teamRun.hasAnyPlayerInGUI()) {
+                // Skip wave progression while GUI is open
+            } else if (!isInfiniteMode) {
+                // Wave progression: Advance wave every 30 seconds
+                int expectedWave = (int) (elapsedSeconds / 30) + 1;
+                if (expectedWave > teamRun.getWave() && expectedWave <= maxWave) {
+                    int previousWave = teamRun.getWave();
+                    teamRun.setWave(expectedWave);
+                    // Notify players
+                    for (Player player : teamRun.getPlayers()) {
+                        if (player != null && player.isOnline()) {
+                            player.sendMessage("§6§l⚡ Wave " + expectedWave + " has begun! §r§7Difficulty increased!");
+                        }
+                    }
+                    // Spawn Warden boss when wave 20 is reached (only once)
+                    if (expectedWave == maxWave && previousWave < maxWave) {
+                        // Check if boss has already been spawned (safety check)
+                        Integer lastBossWave = bossSpawnedWave.get(teamId);
+                        if (lastBossWave == null || lastBossWave != expectedWave) {
+                            spawnWitherBoss(teamRun, arena);
+                            bossSpawnedWave.put(teamId, expectedWave);
+                        }
+                    }
+                } else if (expectedWave > maxWave && teamRun.getWave() == maxWave) {
+                    // Transition to infinite mode
+                    teamRun.setWave(maxWave + 1);
+                    for (Player player : teamRun.getPlayers()) {
+                        if (player != null && player.isOnline()) {
+                            player.sendMessage("§c§l☠ INFINITE MODE ACTIVATED! ☠");
+                            player.sendMessage("§7The waves are now endless and progressively harder!");
+                        }
+                    }
+                }
+            } else if (!teamRun.hasAnyPlayerInGUI()) {
+                // Infinite mode: Advance wave every 30 seconds (no max limit)
+                // Calculate expected wave based on elapsed time (same logic as regular waves)
+                // Note: Wave progression is paused when any player is in GUI
+                int expectedWave = (int) (elapsedSeconds / 30) + 1;
+                if (expectedWave > teamRun.getWave()) {
+                    int previousWave = teamRun.getWave();
+                    // Set wave directly to expected wave (allows catching up if delayed)
+                    teamRun.setWave(expectedWave);
+                    // Notify players every 5 waves
+                    if (expectedWave % 5 == 0 || previousWave < expectedWave - 4) {
+                        // Notify if it's a milestone wave, or if we skipped multiple waves
+                        for (Player player : teamRun.getPlayers()) {
+                            if (player != null && player.isOnline()) {
+                                player.sendMessage("§c§l∞ Infinite Wave " + expectedWave + " §r§7(Getting harder...)");
+                            }
+                        }
+                    }
+                }
+            }
+            
+            double baseDifficulty = plugin.getDifficultyManager().calculateDifficulty(
+                teamRun.getWave(),
+                teamRun.getLevel(),
+                elapsedMinutes
+            );
+            
+            // Add infinite wave difficulty scaling
+            if (isInfiniteMode) {
+                int infiniteWaveNumber = teamRun.getWave() - maxWave;
+                double infiniteDifficultyIncrease = plugin.getConfigManager().getBalanceConfig()
+                    .getDouble("waves.infinite.difficulty-increase-per-wave", 0.15);
+                baseDifficulty += infiniteWaveNumber * infiniteDifficultyIncrease;
+            }
+            
+            // Scale difficulty based on player count
+            int playerCount = teamRun.getPlayerCount();
+            double multiplayerMultiplier = 1.0 + (playerCount - 1) * 0.2; // 20% per additional player
+            
+            // Apply player's difficulty stat (from power-ups)
+            double difficultyStat = teamRun.getStat("difficulty");
+            double difficulty = baseDifficulty * multiplayerMultiplier * difficultyStat;
+            teamRun.setDifficultyMultiplier(difficulty);
+
+            // Freeze/unfreeze mobs based on GUI state
+            updateMobFreeze(teamRun);
+
+            // Check for level up
+            if (teamRun.getExperience() >= teamRun.getExperienceToNextLevel()) {
+                levelUp(teamRun);
+            }
+
+        }, 0L, 20L); // Every second
+
+        runTasks.put(teamId, gameTask);
+        regenTasks.put(teamId, regenTask);
+
+        // Spawn task
+        startSpawnTask(teamRun, arena);
+    }
+
+    /**
+     * Freeze all mobs for a specific duration (for Time Freeze power-up)
+     */
+    public void freezeAllMobs(TeamRun teamRun, int seconds) {
+        UUID teamId = getTeamRunId(teamRun);
+        Set<LivingEntity> frozen = frozenMobs.getOrDefault(teamId, new HashSet<>());
+        
+        if (teamRun.getPlayers().isEmpty()) return;
+        
+        Player firstPlayer = teamRun.getPlayers().get(0);
+        if (firstPlayer == null || !firstPlayer.isOnline()) return;
+        
+        Location center = firstPlayer.getLocation();
+        double radius = 100.0;
+        
+        // Track when time freeze ends (for new spawns)
+        long freezeEndTime = System.currentTimeMillis() + (seconds * 1000L);
+        timeFreezeEndTime.put(teamId, freezeEndTime);
+        
+        // Find and freeze all mobs in arena
+        for (org.bukkit.entity.Entity entity : center.getWorld().getNearbyEntities(center, radius, radius, radius)) {
+            if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                LivingEntity mob = (LivingEntity) entity;
+                if (!frozen.contains(mob)) {
+                    mob.setAI(false); // Disable AI to freeze
+                    frozen.add(mob);
+                    
+                    // Remove all projectiles near the mob
+                    for (org.bukkit.entity.Entity nearby : mob.getNearbyEntities(5, 5, 5)) {
+                        if (nearby instanceof org.bukkit.entity.Projectile) {
+                            nearby.remove();
+                        }
+                    }
+                }
+            }
+        }
+        
+        frozenMobs.put(teamId, frozen);
+        
+        // Unfreeze after duration
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            Set<LivingEntity> stillFrozen = frozenMobs.getOrDefault(teamId, new HashSet<>());
+            for (LivingEntity mob : new HashSet<>(stillFrozen)) {
+                if (mob != null && !mob.isDead() && mob.isValid()) {
+                    mob.setAI(true); // Re-enable AI
+                }
+            }
+            // Only remove from frozen set if not in GUI
+            if (!teamRun.hasAnyPlayerInGUI()) {
+                stillFrozen.clear();
+            }
+            // Clear time freeze tracking
+            timeFreezeEndTime.remove(teamId);
+        }, seconds * 20L);
+    }
+    
+    /**
+     * Check if time freeze is currently active for a team run
+     */
+    public boolean isTimeFreezeActive(UUID teamId) {
+        Long endTime = timeFreezeEndTime.get(teamId);
+        if (endTime == null) {
+            return false;
+        }
+        // Check if freeze time has expired
+        if (System.currentTimeMillis() >= endTime) {
+            timeFreezeEndTime.remove(teamId);
+            return false;
+        }
+        return true;
+    }
+    
+    public void updateMobFreeze(TeamRun teamRun) {
+        UUID teamId = getTeamRunId(teamRun);
+        Set<LivingEntity> frozen = frozenMobs.getOrDefault(teamId, new HashSet<>());
+        
+        // Don't interfere with time freeze power-up - if time freeze is active, don't unfreeze
+        boolean timeFreezeActive = isTimeFreezeActive(teamId);
+        
+        // If any player is in GUI, freeze mobs
+        if (teamRun.hasAnyPlayerInGUI()) {
+            // Find and freeze all mobs in arena
+            if (teamRun.getPlayers().isEmpty()) return;
+            
+            Player firstPlayer = teamRun.getPlayers().get(0);
+            if (firstPlayer == null || !firstPlayer.isOnline()) return;
+            
+            Location center = firstPlayer.getLocation();
+            double radius = 100.0; // Freeze radius
+            
+            for (org.bukkit.entity.Entity entity : center.getWorld().getNearbyEntities(center, radius, radius, radius)) {
+                if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                    LivingEntity mob = (LivingEntity) entity;
+                    if (!frozen.contains(mob)) {
+                        mob.setAI(false); // Disable AI to freeze
+                        frozen.add(mob);
+                    }
+                } else if (entity instanceof org.bukkit.entity.Projectile) {
+                    // Remove any projectiles (arrows, etc.) from mobs when freezing
+                    // This prevents damage from arrows shot right before freeze
+                    org.bukkit.entity.Projectile proj = (org.bukkit.entity.Projectile) entity;
+                    if (proj.getShooter() instanceof LivingEntity && !(proj.getShooter() instanceof Player)) {
+                        proj.remove();
+                    }
+                }
+            }
+        } else if (!timeFreezeActive) {
+            // Only unfreeze if time freeze is NOT active (don't interfere with time freeze power-up)
+            for (LivingEntity mob : frozen) {
+                if (mob != null && !mob.isDead()) {
+                    mob.setAI(true);
+                }
+            }
+            frozen.clear();
+        }
+        // If time freeze is active, keep mobs frozen regardless of GUI state
+        
+        frozenMobs.put(teamId, frozen);
+    }
+
+    private void startSpawnTask(TeamRun teamRun, Arena arena) {
+        UUID teamId = getTeamRunId(teamRun);
+        
+        // Track last spawn time to prevent accumulation when GUI is open
+        final long[] lastSpawnTime = {System.currentTimeMillis()};
+
+        BukkitTask spawnTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) {
+                return;
+            }
+            
+            // If someone is in GUI, pause spawning but don't accumulate time
+            if (teamRun.hasAnyPlayerInGUI()) {
+                // Reset last spawn time when GUI opens so we don't accumulate spawns
+                // This ensures when GUI closes, we wait the full interval before next spawn
+                return;
+            }
+            
+            // Check if enough time has passed since last spawn (10 seconds = 10000ms)
+            long timeSinceLastSpawn = System.currentTimeMillis() - lastSpawnTime[0];
+            if (timeSinceLastSpawn >= 10000) {
+                // Spawn mobs for current wave
+                spawnWaveMobs(teamRun, arena);
+                lastSpawnTime[0] = System.currentTimeMillis(); // Update last spawn time
+            }
+
+        }, 100L, 20L); // Check every second instead of every 10 seconds for more responsive pausing
+
+        spawnTasks.put(teamId, spawnTask);
+    }
+
+    private void spawnWaveMobs(TeamRun teamRun, Arena arena) {
+        if (arena.getCenter() == null) return;
+
+        List<com.eldor.roguecraft.managers.SpawnManager.SpawnEntry> spawns = 
+            plugin.getSpawnManager().getSpawnsForWave(teamRun.getWave());
+
+        int playerCount = teamRun.getPlayerCount();
+        
+        for (com.eldor.roguecraft.managers.SpawnManager.SpawnEntry entry : spawns) {
+            // Scale spawn count with player count
+            int spawnCount = (int) (entry.getCount() * (1.0 + (playerCount - 1) * 0.5));
+            
+                for (int i = 0; i < spawnCount; i++) {
+                Location spawnLoc = getRandomSpawnLocation(arena);
+                if (spawnLoc != null) {
+                    // Mark location BEFORE spawning so WorldGuardListener can detect it
+                    // Use a slight delay to ensure the event fires before cleanup
+                    Location spawnLocClone = spawnLoc.clone();
+                    addSpawnLocation(spawnLocClone);
+                    
+                    org.bukkit.entity.Entity entity = null;
+                    try {
+                        entity = spawnLoc.getWorld().spawnEntity(spawnLoc, entry.getType());
+                        
+                        // Mark entity as plugin-spawned for WorldGuard compatibility
+                        if (entity != null) {
+                            entity.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                        } else {
+                            plugin.getLogger().warning("Failed to spawn entity at " + spawnLoc + " - spawnEntity returned null");
+                            continue; // Skip to next spawn attempt
+                        }
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("Exception spawning mob at " + spawnLoc + ": " + e.getMessage());
+                        e.printStackTrace();
+                        continue; // Skip to next spawn attempt
+                    }
+                    
+                    if (entity instanceof LivingEntity) {
+                        LivingEntity mob = (LivingEntity) entity;
+                        
+                        // Check if time freeze is active and freeze new spawns
+                        UUID teamId = getTeamRunId(teamRun);
+                        if (isTimeFreezeActive(teamId)) {
+                            mob.setAI(false); // Freeze immediately
+                            Set<LivingEntity> frozen = frozenMobs.getOrDefault(teamId, new HashSet<>());
+                            frozen.add(mob);
+                            frozenMobs.put(teamId, frozen);
+                        }
+                        
+                        // Check if this is an elite mob
+                        boolean isElite = entry.isElite();
+                        
+                        // Check if elite should become legendary (rarer than elite)
+                        boolean isLegendary = false;
+                        if (isElite) {
+                            double legendaryChance = plugin.getConfigManager().getBalanceConfig().getDouble("legendary.spawn-chance", 0.15);
+                            if (Math.random() < legendaryChance) {
+                                isLegendary = true;
+                            }
+                        }
+                        
+                        // Scale mob HP based on player count, difficulty, and wave
+                        double hpMultiplier = plugin.getDifficultyManager().getMobHealthMultiplier(teamRun.getDifficultyMultiplier());
+                        hpMultiplier *= (1.0 + (playerCount - 1) * 0.3); // 30% HP per additional player
+                        // Add wave-based scaling (enemies get tankier each wave)
+                        double waveMultiplier = 1.0 + (teamRun.getWave() * 0.15); // 15% per wave
+                        hpMultiplier *= waveMultiplier;
+                        
+                        // Apply elite bonuses (reduced HP multiplier to balance with armor)
+                        if (isElite) {
+                            double eliteHpMultiplier = plugin.getConfigManager().getBalanceConfig().getDouble("elites.hp-multiplier", 2.0);
+                            // Reduce HP multiplier for later waves (wave 10+) since they get armor
+                            if (teamRun.getWave() >= 10) {
+                                eliteHpMultiplier *= 0.7; // 30% reduction when armor is present
+                            }
+                            hpMultiplier *= eliteHpMultiplier;
+                            
+                            // Apply legendary HP multiplier on top of elite
+                            if (isLegendary) {
+                                double legendaryHpMultiplier = plugin.getConfigManager().getBalanceConfig().getDouble("legendary.hp-multiplier", 1.5);
+                                hpMultiplier *= legendaryHpMultiplier;
+                            }
+                        }
+                        
+                        // Cap health at Minecraft's maximum (2048.0) to prevent errors
+                        double newMaxHealth = mob.getMaxHealth() * hpMultiplier;
+                        double finalMaxHealth = Math.min(2048.0, newMaxHealth);
+                        mob.setMaxHealth(finalMaxHealth);
+                        mob.setHealth(finalMaxHealth);
+                        
+                        // Apply elite/legendary bonuses
+                        if (isLegendary) {
+                            applyLegendaryScaling(mob);
+                            // Legendary damage resistance is handled in PlayerListener.onEntityDamage
+                        } else if (isElite) {
+                            applyEliteScaling(mob);
+                            // Elite damage resistance is now handled in PlayerListener.onEntityDamage
+                            // (replaced armor system with scaling resistance modifier)
+                        }
+                        
+                        // Tag undead mobs so we can prevent sunlight damage
+                        if (mob instanceof org.bukkit.entity.Zombie || 
+                            mob instanceof org.bukkit.entity.Skeleton ||
+                            mob instanceof org.bukkit.entity.Stray ||
+                            mob instanceof org.bukkit.entity.Husk ||
+                            mob instanceof org.bukkit.entity.Drowned ||
+                            mob instanceof org.bukkit.entity.WitherSkeleton ||
+                            mob instanceof org.bukkit.entity.Phantom) {
+                            // Tag as roguecraft mob so we can prevent sunlight damage
+                            mob.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                        }
+                        
+                        // Set up health display for all mobs
+                        updateMobHealthDisplay(mob);
+                        
+                        // Scale mob movement speed with wave number and difficulty
+                        applyMobSpeedScaling(mob, teamRun.getWave(), teamRun.getDifficultyMultiplier());
+                        
+                        // Set mob to target nearest player for better pathfinding
+                        if (!teamRun.getPlayers().isEmpty()) {
+                            Player nearestPlayer = null;
+                            double nearestDistance = Double.MAX_VALUE;
+                            for (Player player : teamRun.getPlayers()) {
+                                if (player != null && player.isOnline() && !player.isDead()) {
+                                    double dist = player.getLocation().distance(mob.getLocation());
+                                    if (dist < nearestDistance) {
+                                        nearestDistance = dist;
+                                        nearestPlayer = player;
+                                    }
+                                }
+                            }
+                            
+                            // Set target if within reasonable range (mob will pathfind naturally after)
+                            if (nearestPlayer != null && nearestDistance < 100) {
+                                // For mobs that can have targets (like Zombie, Skeleton, etc.)
+                                if (mob instanceof org.bukkit.entity.Mob) {
+                                    ((org.bukkit.entity.Mob) mob).setTarget(nearestPlayer);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void spawnWitherBoss(TeamRun teamRun, Arena arena) {
+        if (arena.getCenter() == null) return;
+        
+        // Spawn Wither at arena center (or slightly offset)
+        Location spawnLoc = arena.getCenter().clone();
+        if (spawnLoc.getWorld() == null) return;
+        
+        // Find safe Y position (Wither needs space above)
+        org.bukkit.World world = spawnLoc.getWorld();
+        org.bukkit.block.Block block = world.getBlockAt(spawnLoc);
+        while (block.getType().isSolid() && spawnLoc.getY() < world.getMaxHeight()) {
+            spawnLoc.add(0, 1, 0);
+            block = world.getBlockAt(spawnLoc);
+        }
+        // Ensure we're on solid ground
+        while (!block.getType().isSolid() && spawnLoc.getY() > world.getMinHeight()) {
+            spawnLoc.subtract(0, 1, 0);
+            block = world.getBlockAt(spawnLoc);
+        }
+        spawnLoc.add(0, 2, 0); // Spawn 2 blocks above ground (Wither needs space)
+        
+        // Mark location BEFORE spawning so WorldGuardListener can detect it
+        addSpawnLocation(spawnLoc);
+        
+        try {
+            org.bukkit.entity.Entity entity = spawnLoc.getWorld().spawnEntity(spawnLoc, org.bukkit.entity.EntityType.WITHER);
+            
+            if (entity instanceof org.bukkit.entity.LivingEntity) {
+                org.bukkit.entity.LivingEntity wither = (org.bukkit.entity.LivingEntity) entity;
+                
+                // Mark as plugin-spawned and boss
+                wither.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_boss", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_elite_boss", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Special elite boss tag
+                
+                // Calculate scaled health based on level and difficulty
+                int playerLevel = teamRun.getLevel();
+                double difficulty = teamRun.getDifficultyMultiplier();
+                int playerCount = teamRun.getPlayerCount();
+                
+                // Base health: 600 HP (Wither's default is 600)
+                double baseHealth = 600.0;
+                
+                // Scale with level (50 HP per level)
+                double levelHealth = baseHealth + (playerLevel * 50.0);
+                
+                // Scale with difficulty (difficulty multiplier)
+                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.5);
+                
+                // Scale with player count (20% per additional player)
+                double multiplayerHealth = difficultyHealth * (1.0 + (playerCount - 1) * 0.2);
+                
+                // Apply wave-based scaling (15% per wave, wave 20 = +300%)
+                double waveHealth = multiplayerHealth * (1.0 + (teamRun.getWave() * 0.15));
+                
+                // Cap health at Minecraft's maximum (2048.0)
+                double finalHealth = Math.min(2048.0, waveHealth);
+                
+                wither.setMaxHealth(finalHealth);
+                wither.setHealth(finalHealth);
+                
+                // Apply elite boss scaling (2.5x size, red visual effects)
+                applyEliteBossScaling(wither);
+                
+                // Set custom name with red color
+                wither.setCustomName(org.bukkit.ChatColor.DARK_RED + "" + org.bukkit.ChatColor.BOLD + "☠ BOSS: WITHER ☠");
+                wither.setCustomNameVisible(true);
+                
+                // Update health display
+                updateMobHealthDisplay(wither);
+                
+                // Make Wither target nearest player
+                if (!teamRun.getPlayers().isEmpty()) {
+                    Player nearestPlayer = null;
+                    double nearestDistance = Double.MAX_VALUE;
+                    for (Player player : teamRun.getPlayers()) {
+                        if (player != null && player.isOnline() && !player.isDead()) {
+                            double dist = player.getLocation().distance(wither.getLocation());
+                            if (dist < nearestDistance) {
+                                nearestDistance = dist;
+                                nearestPlayer = player;
+                            }
+                        }
+                    }
+                    
+                    // Set target if within reasonable range
+                    if (nearestPlayer != null && nearestDistance < 100) {
+                        if (wither instanceof org.bukkit.entity.Mob) {
+                            ((org.bukkit.entity.Mob) wither).setTarget(nearestPlayer);
+                        } else if (wither instanceof org.bukkit.entity.Wither) {
+                            // Wither has special targeting - set target using reflection if needed
+                            ((org.bukkit.entity.Wither) wither).setTarget(nearestPlayer);
+                        }
+                    }
+                }
+                
+                // Start red particle effect task
+                startBossParticleEffect(wither, teamRun);
+                
+                // Start boss targeting task (keeps Wither aggro on players)
+                startBossTargetingTask(wither, teamRun);
+                
+                // Notify all players
+                for (org.bukkit.entity.Player player : teamRun.getPlayers()) {
+                    if (player != null && player.isOnline()) {
+                        player.sendMessage(org.bukkit.ChatColor.DARK_RED + "" + org.bukkit.ChatColor.BOLD + "☠ THE WITHER HAS AWAKENED! ☠");
+                        player.sendMessage(org.bukkit.ChatColor.GRAY + "The final boss has spawned!");
+                        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_WITHER_SPAWN, 1.0f, 0.8f);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to spawn Wither boss: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Apply elite boss scaling (2.5x size, red visual effects)
+     */
+    private void applyEliteBossScaling(LivingEntity mob) {
+        try {
+            // 2.5x size multiplier for boss
+            double sizeMultiplier = 2.5;
+            
+            // Visual indicators - red glowing effect (using red particles instead of white glow)
+            mob.setGlowing(true); // Still use glowing for visibility, but we'll add red particles
+            
+            // Store original name for health display
+            String originalName = mob.getType().name().replace("_", " ");
+            mob.setMetadata("original_name", new org.bukkit.metadata.FixedMetadataValue(plugin, originalName));
+            mob.setMetadata("is_elite", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            mob.setMetadata("is_elite_boss", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Special tag for red effects
+            
+            // Try to scale entity size using Bukkit Attribute API
+            try {
+                org.bukkit.attribute.Attribute scaleAttr = org.bukkit.attribute.Attribute.GENERIC_SCALE;
+                org.bukkit.attribute.AttributeInstance scaleInstance = mob.getAttribute(scaleAttr);
+                
+                if (scaleInstance != null) {
+                    scaleInstance.setBaseValue(sizeMultiplier);
+                    plugin.getLogger().fine("Applied elite boss size scaling via SCALE attribute: " + sizeMultiplier);
+                    return;
+                }
+            } catch (Exception e) {
+                plugin.getLogger().fine("SCALE attribute not available, trying NMS reflection: " + e.getMessage());
+            }
+            
+            // Fallback: Try to scale entity size using NMS reflection (same as applyEliteScaling)
+            try {
+                Object craftEntity = mob.getClass().getMethod("getHandle").invoke(mob);
+                Class<?> entityClass = craftEntity.getClass().getSuperclass();
+                
+                try {
+                    java.lang.reflect.Method setScaleMethod = null;
+                    try {
+                        setScaleMethod = entityClass.getMethod("setScale", float.class);
+                    } catch (NoSuchMethodException e) {
+                        try {
+                            setScaleMethod = craftEntity.getClass().getMethod("setScale", float.class);
+                        } catch (NoSuchMethodException e2) {
+                            try {
+                                Class<?> entityClass2 = craftEntity.getClass();
+                                setScaleMethod = entityClass2.getMethod("a", float.class);
+                            } catch (NoSuchMethodException e3) {}
+                        }
+                    }
+                    
+                    if (setScaleMethod != null) {
+                        setScaleMethod.invoke(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied elite boss size scaling via setScale method");
+                        return;
+                    }
+                    
+                    // Try field access
+                    try {
+                        java.lang.reflect.Field scaleField = entityClass.getDeclaredField("scale");
+                        scaleField.setAccessible(true);
+                        scaleField.set(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied elite boss size scaling via scale field");
+                        return;
+                    } catch (NoSuchFieldException e) {
+                        try {
+                            java.lang.reflect.Field scaleField = entityClass.getDeclaredField("dataScale");
+                            scaleField.setAccessible(true);
+                            scaleField.set(craftEntity, (float) sizeMultiplier);
+                            plugin.getLogger().fine("Applied elite boss size scaling via dataScale field");
+                            return;
+                        } catch (NoSuchFieldException e2) {
+                            // Try obfuscated field names
+                            for (java.lang.reflect.Field field : entityClass.getDeclaredFields()) {
+                                if (field.getType() == float.class || field.getType() == Float.class) {
+                                    try {
+                                        field.setAccessible(true);
+                                        float currentValue = field.getFloat(craftEntity);
+                                        if (currentValue >= 0.5f && currentValue <= 2.0f) {
+                                            field.set(craftEntity, (float) sizeMultiplier);
+                                            plugin.getLogger().fine("Applied elite boss size scaling via detected scale field");
+                                            return;
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().fine("NMS size scaling failed: " + e.getMessage());
+                }
+            } catch (Exception e) {
+                plugin.getLogger().fine("Reflection access failed for elite boss size scaling: " + e.getMessage());
+            }
+            
+        } catch (Exception e) {
+            plugin.getLogger().fine("Failed to apply elite boss scaling: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Start red particle effect around boss
+     */
+    private void startBossParticleEffect(LivingEntity boss, TeamRun teamRun) {
+        if (boss == null || boss.isDead()) return;
+        
+        // Create task to spawn red particles around boss every 0.5 seconds
+        final int[] taskId = new int[1];
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (boss.isDead() || !boss.isValid()) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Spawn red particles around the boss
+                Location loc = boss.getLocation();
+                for (int i = 0; i < 8; i++) {
+                    double angle = (i * Math.PI * 2) / 8;
+                    double radius = 1.5;
+                    double x = loc.getX() + Math.cos(angle) * radius;
+                    double y = loc.getY() + 1.0;
+                    double z = loc.getZ() + Math.sin(angle) * radius;
+                    
+                    Location particleLoc = new Location(loc.getWorld(), x, y, z);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.DUST, particleLoc, 1, 
+                        new org.bukkit.Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                }
+            }
+        }, 0L, 10L); // Every 0.5 seconds (10 ticks)
+        
+        // Store task ID for cleanup
+        boss.setMetadata("boss_particle_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+    
+    /**
+     * Start boss targeting task to keep Wither aggro on players
+     */
+    private void startBossTargetingTask(LivingEntity boss, TeamRun teamRun) {
+        if (boss == null || boss.isDead()) return;
+        
+        // Create task to update boss target every 2 seconds
+        final int[] taskId = new int[1];
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (boss.isDead() || !boss.isValid()) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Find nearest player and set as target
+                if (!teamRun.getPlayers().isEmpty()) {
+                    Player nearestPlayer = null;
+                    double nearestDistance = Double.MAX_VALUE;
+                    for (Player player : teamRun.getPlayers()) {
+                        if (player != null && player.isOnline() && !player.isDead()) {
+                            double dist = player.getLocation().distance(boss.getLocation());
+                            if (dist < nearestDistance) {
+                                nearestDistance = dist;
+                                nearestPlayer = player;
+                            }
+                        }
+                    }
+                    
+                    // Set target if within reasonable range
+                    if (nearestPlayer != null && nearestDistance < 100) {
+                        if (boss instanceof org.bukkit.entity.Mob) {
+                            ((org.bukkit.entity.Mob) boss).setTarget(nearestPlayer);
+                        } else if (boss instanceof org.bukkit.entity.Wither) {
+                            ((org.bukkit.entity.Wither) boss).setTarget(nearestPlayer);
+                        }
+                    }
+                }
+            }
+        }, 0L, 40L); // Every 2 seconds (40 ticks)
+        
+        // Store task ID for cleanup
+        boss.setMetadata("boss_targeting_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+    
+    /**
+     * Start legendary particle effect around legendary mob (golden glow)
+     */
+    private void startLegendaryParticleEffect(LivingEntity legendary) {
+        if (legendary == null || legendary.isDead()) return;
+        
+        // Create task to spawn golden particles around legendary mob every 0.3 seconds for a golden glow effect
+        final int[] taskId = new int[1];
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (legendary.isDead() || !legendary.isValid()) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Spawn golden particles around the legendary mob for a golden glow
+                Location loc = legendary.getLocation();
+                // Create a golden aura with more particles
+                for (int i = 0; i < 12; i++) {
+                    double angle = (i * Math.PI * 2) / 12;
+                    double radius = 1.0 + (Math.random() * 0.4); // Slight variation in radius
+                    double x = loc.getX() + Math.cos(angle) * radius;
+                    double y = loc.getY() + 0.5 + (Math.random() * 1.0); // Vary height
+                    double z = loc.getZ() + Math.sin(angle) * radius;
+                    
+                    Location particleLoc = new Location(loc.getWorld(), x, y, z);
+                    // Use golden/yellow particles for a gold glow effect
+                    // Mix of bright gold and yellow for a glowing effect
+                    org.bukkit.Color goldColor = Math.random() < 0.7 ? 
+                        org.bukkit.Color.fromRGB(255, 215, 0) : // Gold
+                        org.bukkit.Color.fromRGB(255, 255, 0); // Bright yellow
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.DUST, particleLoc, 1, 
+                        new org.bukkit.Particle.DustOptions(goldColor, 1.2f));
+                }
+                
+                // Also spawn some particles above the mob for a golden aura
+                Location topLoc = loc.clone().add(0, 1.5, 0);
+                for (int i = 0; i < 4; i++) {
+                    double offsetX = (Math.random() - 0.5) * 0.8;
+                    double offsetZ = (Math.random() - 0.5) * 0.8;
+                    Location auraLoc = topLoc.clone().add(offsetX, 0, offsetZ);
+                    topLoc.getWorld().spawnParticle(org.bukkit.Particle.DUST, auraLoc, 1, 
+                        new org.bukkit.Particle.DustOptions(org.bukkit.Color.fromRGB(255, 215, 0), 1.5f)); // Gold
+                }
+            }
+        }, 0L, 6L); // Every 0.3 seconds (6 ticks) for smoother glow
+        
+        // Store task ID for cleanup
+        legendary.setMetadata("legendary_particle_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+
+    private Location getRandomSpawnLocation(Arena arena) {
+        if (arena.getCenter() == null) return null;
+
+        Random random = new Random();
+        
+        // Spawn mobs closer to players, but still around the arena edge
+        // Use 60-90% of radius to ensure they're within pathfinding range (16 blocks default, but can be extended)
+        // This ensures mobs spawn within reasonable pathfinding distance
+        double minDistance = arena.getRadius() * 0.6;
+        double maxDistance = arena.getRadius() * 0.9;
+        double distance = minDistance + random.nextDouble() * (maxDistance - minDistance);
+        
+        double angle = random.nextDouble() * 2 * Math.PI;
+        double x = arena.getCenter().getX() + Math.cos(angle) * distance;
+        double z = arena.getCenter().getZ() + Math.sin(angle) * distance;
+        double y = arena.getCenter().getY();
+
+        Location spawnLoc = new Location(arena.getCenter().getWorld(), x, y, z);
+        
+        // Find a safe Y position (not in air or solid block)
+        org.bukkit.World world = spawnLoc.getWorld();
+        if (world != null) {
+            org.bukkit.block.Block block = world.getBlockAt(spawnLoc);
+            org.bukkit.block.Block below = world.getBlockAt(spawnLoc.clone().add(0, -1, 0));
+            
+            // If spawn location is in air, find ground
+            if (block.getType() == org.bukkit.Material.AIR && below.getType() != org.bukkit.Material.AIR) {
+                // Already on ground
+            } else if (block.getType() == org.bukkit.Material.AIR) {
+                // Find ground below
+                for (int i = 1; i <= 10; i++) {
+                    org.bukkit.block.Block check = world.getBlockAt(spawnLoc.clone().add(0, -i, 0));
+                    if (check.getType() != org.bukkit.Material.AIR) {
+                        spawnLoc.setY(spawnLoc.getY() - i + 1);
+                        break;
+                    }
+                }
+            } else if (block.getType().isSolid()) {
+                // Find air above
+                for (int i = 1; i <= 10; i++) {
+                    org.bukkit.block.Block check = world.getBlockAt(spawnLoc.clone().add(0, i, 0));
+                    if (check.getType() == org.bukkit.Material.AIR) {
+                        spawnLoc.setY(spawnLoc.getY() + i);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        return spawnLoc;
+    }
+    
+    /**
+     * Apply elite mob scaling (size, visual effects)
+     */
+    private void applyEliteScaling(LivingEntity mob) {
+        try {
+            // Get size multiplier from config
+            double sizeMultiplier = plugin.getConfigManager().getBalanceConfig().getDouble("elites.size-multiplier", 4.0);
+            
+            // Visual indicators
+            mob.setGlowing(true);
+            // Store original name for health display
+            String originalName = mob.getType().name().replace("_", " ");
+            mob.setMetadata("original_name", new org.bukkit.metadata.FixedMetadataValue(plugin, originalName));
+            mob.setMetadata("is_elite", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            // Health display will be updated by the periodic task
+            
+            // Try to scale entity size using Bukkit Attribute API (available in 1.20.5+)
+            try {
+                // Try using SCALE attribute if available
+                org.bukkit.attribute.Attribute scaleAttr = org.bukkit.attribute.Attribute.GENERIC_SCALE;
+                org.bukkit.attribute.AttributeInstance scaleInstance = mob.getAttribute(scaleAttr);
+                
+                if (scaleInstance != null) {
+                    // Set scale using attribute (base scale is 1.0, so multiply by sizeMultiplier)
+                    scaleInstance.setBaseValue(sizeMultiplier);
+                    plugin.getLogger().fine("Applied elite size scaling via SCALE attribute: " + sizeMultiplier);
+                    return;
+                }
+            } catch (Exception e) {
+                // SCALE attribute not available, try NMS reflection
+                plugin.getLogger().fine("SCALE attribute not available, trying NMS reflection: " + e.getMessage());
+            }
+            
+            // Fallback: Try to scale entity size using NMS reflection
+            try {
+                // Get NMS entity
+                Object craftEntity = mob.getClass().getMethod("getHandle").invoke(mob);
+                Class<?> entityClass = craftEntity.getClass().getSuperclass();
+                
+                // Try to find and set the scale field/method
+                try {
+                    // Method 1: Try to find setScale method (if available in newer versions)
+                    java.lang.reflect.Method setScaleMethod = null;
+                    try {
+                        setScaleMethod = entityClass.getMethod("setScale", float.class);
+                    } catch (NoSuchMethodException e) {
+                        // Try alternative method names
+                        try {
+                            setScaleMethod = craftEntity.getClass().getMethod("setScale", float.class);
+                        } catch (NoSuchMethodException e2) {
+                            // Try EntityData API (1.20.5+)
+                            try {
+                                Class<?> entityClass2 = craftEntity.getClass();
+                                setScaleMethod = entityClass2.getMethod("a", float.class); // setScale in obfuscated
+                            } catch (NoSuchMethodException e3) {
+                                // Method doesn't exist, try field access
+                            }
+                        }
+                    }
+                    
+                    if (setScaleMethod != null) {
+                        setScaleMethod.invoke(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied elite size scaling via setScale method");
+                        return;
+                    }
+                    
+                    // Method 2: Try to access scale field directly
+                    try {
+                        java.lang.reflect.Field scaleField = entityClass.getDeclaredField("scale");
+                        scaleField.setAccessible(true);
+                        scaleField.set(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied elite size scaling via scale field");
+                        return;
+                    } catch (NoSuchFieldException e) {
+                        // Try alternative field names
+                        try {
+                            java.lang.reflect.Field scaleField = entityClass.getDeclaredField("dataScale");
+                            scaleField.setAccessible(true);
+                            scaleField.set(craftEntity, (float) sizeMultiplier);
+                            plugin.getLogger().fine("Applied elite size scaling via dataScale field");
+                            return;
+                        } catch (NoSuchFieldException e2) {
+                            // Try obfuscated field names
+                            for (java.lang.reflect.Field field : entityClass.getDeclaredFields()) {
+                                if (field.getType() == float.class || field.getType() == Float.class) {
+                                    try {
+                                        field.setAccessible(true);
+                                        float currentValue = field.getFloat(craftEntity);
+                                        if (currentValue >= 0.5f && currentValue <= 2.0f) { // Likely scale field
+                                            field.set(craftEntity, (float) sizeMultiplier);
+                                            plugin.getLogger().fine("Applied elite size scaling via detected scale field");
+                                            return;
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            }
+                            plugin.getLogger().fine("Entity size scaling not available - using visual indicators only");
+                        }
+                    }
+                } catch (Exception e) {
+                    // NMS access failed, use visual indicators only
+                    plugin.getLogger().fine("NMS size scaling failed: " + e.getMessage());
+                }
+            } catch (Exception e) {
+                // Reflection failed completely, use visual indicators only
+                plugin.getLogger().fine("Reflection access failed for elite size scaling: " + e.getMessage());
+            }
+            
+        } catch (Exception e) {
+            // Only log at fine level to avoid spam - elite scaling failures are not critical
+            plugin.getLogger().fine("Failed to apply elite scaling: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Apply legendary mob scaling (size, visual effects)
+     * Legendary mobs are rarer and stronger than elites
+     */
+    private void applyLegendaryScaling(LivingEntity mob) {
+        try {
+            // Get size multiplier from config (2.1x - 0.4x bigger than elite)
+            double sizeMultiplier = plugin.getConfigManager().getBalanceConfig().getDouble("legendary.size-multiplier", 2.1);
+            
+            // Visual indicators - legendary gets golden glow effect using team color
+            mob.setGlowing(true);
+            // Set gold glow color using scoreboard team
+            setGoldGlowColor(mob);
+            // Store original name for health display
+            String originalName = mob.getType().name().replace("_", " ");
+            mob.setMetadata("original_name", new org.bukkit.metadata.FixedMetadataValue(plugin, originalName));
+            mob.setMetadata("is_elite", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Legendary is also elite
+            mob.setMetadata("is_legendary", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Special legendary tag
+            mob.setMetadata("roguecraft_legendary", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // For easy checking
+            // Health display will be updated by the periodic task
+            
+            // Start legendary particle effect (golden/purple particles)
+            startLegendaryParticleEffect(mob);
+            
+            // Try to scale entity size using Bukkit Attribute API (available in 1.20.5+)
+            try {
+                // Try using SCALE attribute if available
+                org.bukkit.attribute.Attribute scaleAttr = org.bukkit.attribute.Attribute.GENERIC_SCALE;
+                org.bukkit.attribute.AttributeInstance scaleInstance = mob.getAttribute(scaleAttr);
+                
+                if (scaleInstance != null) {
+                    // Set scale using attribute (base scale is 1.0, so multiply by sizeMultiplier)
+                    scaleInstance.setBaseValue(sizeMultiplier);
+                    plugin.getLogger().fine("Applied legendary size scaling via SCALE attribute: " + sizeMultiplier);
+                    return;
+                }
+            } catch (Exception e) {
+                // SCALE attribute not available, try NMS reflection
+                plugin.getLogger().fine("SCALE attribute not available, trying NMS reflection: " + e.getMessage());
+            }
+            
+            // Fallback: Try to scale entity size using NMS reflection (same as applyEliteScaling)
+            try {
+                // Get NMS entity
+                Object craftEntity = mob.getClass().getMethod("getHandle").invoke(mob);
+                Class<?> entityClass = craftEntity.getClass().getSuperclass();
+                
+                // Try to find and set the scale field/method
+                try {
+                    // Method 1: Try to find setScale method (if available in newer versions)
+                    java.lang.reflect.Method setScaleMethod = null;
+                    try {
+                        setScaleMethod = entityClass.getMethod("setScale", float.class);
+                    } catch (NoSuchMethodException e) {
+                        // Try alternative method names
+                        try {
+                            setScaleMethod = craftEntity.getClass().getMethod("setScale", float.class);
+                        } catch (NoSuchMethodException e2) {
+                            // Try EntityData API (1.20.5+)
+                            try {
+                                Class<?> entityClass2 = craftEntity.getClass();
+                                setScaleMethod = entityClass2.getMethod("a", float.class); // setScale in obfuscated
+                            } catch (NoSuchMethodException e3) {
+                                // Method doesn't exist, try field access
+                            }
+                        }
+                    }
+                    
+                    if (setScaleMethod != null) {
+                        setScaleMethod.invoke(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied legendary size scaling via setScale method");
+                        return;
+                    }
+                    
+                    // Method 2: Try to access scale field directly
+                    try {
+                        java.lang.reflect.Field scaleField = entityClass.getDeclaredField("scale");
+                        scaleField.setAccessible(true);
+                        scaleField.set(craftEntity, (float) sizeMultiplier);
+                        plugin.getLogger().fine("Applied legendary size scaling via scale field");
+                        return;
+                    } catch (NoSuchFieldException e) {
+                        // Try alternative field names
+                        try {
+                            java.lang.reflect.Field scaleField = entityClass.getDeclaredField("dataScale");
+                            scaleField.setAccessible(true);
+                            scaleField.set(craftEntity, (float) sizeMultiplier);
+                            plugin.getLogger().fine("Applied legendary size scaling via dataScale field");
+                            return;
+                        } catch (NoSuchFieldException e2) {
+                            // Try obfuscated field names
+                            for (java.lang.reflect.Field field : entityClass.getDeclaredFields()) {
+                                if (field.getType() == float.class || field.getType() == Float.class) {
+                                    try {
+                                        field.setAccessible(true);
+                                        float currentValue = field.getFloat(craftEntity);
+                                        if (currentValue >= 0.5f && currentValue <= 2.0f) { // Likely scale field
+                                            field.set(craftEntity, (float) sizeMultiplier);
+                                            plugin.getLogger().fine("Applied legendary size scaling via detected scale field");
+                                            return;
+                                        }
+                                    } catch (Exception ignored) {}
+                                }
+                            }
+                            plugin.getLogger().fine("Entity size scaling not available - using visual indicators only");
+                        }
+                    }
+                } catch (Exception e) {
+                    // NMS access failed, use visual indicators only
+                    plugin.getLogger().fine("NMS size scaling failed: " + e.getMessage());
+                }
+            } catch (Exception e) {
+                // Reflection failed completely, use visual indicators only
+                plugin.getLogger().fine("Reflection access failed for legendary size scaling: " + e.getMessage());
+            }
+            
+        } catch (Exception e) {
+            // Only log at fine level to avoid spam - legendary scaling failures are not critical
+            plugin.getLogger().fine("Failed to apply legendary scaling: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Set gold glow color for legendary mobs using scoreboard team
+     */
+    private void setGoldGlowColor(LivingEntity mob) {
+        try {
+            // Get or create the main scoreboard
+            org.bukkit.scoreboard.Scoreboard scoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
+            org.bukkit.scoreboard.Team team = scoreboard.getTeam("roguecraft_legendary_gold");
+            
+            // Create team if it doesn't exist
+            if (team == null) {
+                team = scoreboard.registerNewTeam("roguecraft_legendary_gold");
+                team.setColor(org.bukkit.ChatColor.GOLD); // Set team color to gold for gold glow
+            }
+            
+            // Add entity to team (this changes the glow color to gold)
+            if (!team.hasEntry(mob.getUniqueId().toString())) {
+                team.addEntry(mob.getUniqueId().toString());
+            }
+        } catch (Exception e) {
+            // Fallback: if team system fails, just use regular glowing
+            plugin.getLogger().fine("Failed to set gold glow color: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Update mob custom name to show health
+     */
+    private void updateMobHealthDisplay(LivingEntity mob) {
+        // Store original name if not already stored
+        if (!mob.hasMetadata("original_name")) {
+            String originalName = mob.getCustomName();
+            if (originalName == null) {
+                originalName = mob.getType().name().replace("_", " ");
+            }
+            mob.setMetadata("original_name", new org.bukkit.metadata.FixedMetadataValue(plugin, originalName));
+        }
+        
+        // Update health display
+        updateMobNameWithHealth(mob);
+    }
+    
+    /**
+     * Update a mob's name to show current health
+     */
+    private void updateMobNameWithHealth(LivingEntity mob) {
+        if (mob.isDead() || !mob.isValid()) return;
+        
+        String originalName = mob.getType().name().replace("_", " ");
+        if (mob.hasMetadata("original_name")) {
+            originalName = mob.getMetadata("original_name").get(0).asString();
+        }
+        
+        double currentHealth = mob.getHealth();
+        double maxHealth = mob.getMaxHealth();
+        double healthPercent = (currentHealth / maxHealth) * 100.0;
+        
+        // Choose color based on health percentage
+        ChatColor healthColor;
+        if (healthPercent > 75) {
+            healthColor = ChatColor.GREEN;
+        } else if (healthPercent > 50) {
+            healthColor = ChatColor.YELLOW;
+        } else if (healthPercent > 25) {
+            healthColor = ChatColor.GOLD;
+        } else {
+            healthColor = ChatColor.RED;
+        }
+        
+        // Build health bar (10 hearts)
+        int fullHearts = (int) (healthPercent / 10);
+        StringBuilder healthBar = new StringBuilder();
+        for (int i = 0; i < 10; i++) {
+            if (i < fullHearts) {
+                healthBar.append(healthColor).append("❤");
+            } else {
+                healthBar.append(ChatColor.GRAY).append("❤");
+            }
+        }
+        
+        // Format health display
+        String healthDisplay = String.format("%.1f/%.1f", currentHealth, maxHealth);
+        String name;
+        
+        // Check if elite boss (Wither)
+        boolean isEliteBoss = mob.hasMetadata("roguecraft_elite_boss") || mob.hasMetadata("is_elite_boss");
+        // Check if legendary
+        boolean isLegendary = mob.hasMetadata("is_legendary");
+        // Check if elite (glowing + has elite metadata or original name contains ELITE)
+        boolean isElite = mob.isGlowing() && (mob.hasMetadata("is_elite") || 
+                          (mob.getCustomName() != null && mob.getCustomName().contains("ELITE")));
+        
+        if (isEliteBoss) {
+            // Elite boss (Wither) - red name
+            name = "§4§l☠ BOSS: WITHER ☠ §r§7[" + healthColor + healthDisplay + "§7]";
+        } else if (isLegendary) {
+            // Legendary mob - golden/purple name
+            name = "§6§l★ LEGENDARY ★ §r" + originalName + " §7[" + healthColor + healthDisplay + "§7]";
+        } else if (isElite) {
+            name = "§c§l⚡ ELITE §r" + originalName + " §7[" + healthColor + healthDisplay + "§7]";
+        } else {
+            name = originalName + " §7[" + healthColor + healthDisplay + "§7]";
+        }
+        
+        mob.setCustomName(name);
+        mob.setCustomNameVisible(true);
+    }
+    
+    /**
+     * Start periodic task to update mob health displays for all players in a run
+     */
+    private void startMobHealthDisplay(TeamRun teamRun) {
+        UUID runId = teamRun.getPlayers().get(0).getUniqueId();
+        
+        // Cancel existing task if any
+        BukkitTask existingTask = runTasks.get(runId);
+        if (existingTask != null && existingTask.getTaskId() != -1) {
+            // Don't cancel the main game loop, just add health display to it
+        }
+        
+        // Update mob health displays every second (20 ticks)
+        Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) return;
+            
+            // Update health for all nearby mobs for all players
+            for (Player player : teamRun.getPlayers()) {
+                if (player == null || !player.isOnline()) continue;
+                
+                // Update health for mobs within 30 blocks
+                for (org.bukkit.entity.Entity entity : player.getNearbyEntities(30, 30, 30)) {
+                    if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                        LivingEntity mob = (LivingEntity) entity;
+                        updateMobNameWithHealth(mob);
+                    }
+                }
+            }
+        }, 20L, 20L); // Every second
+    }
+    
+    private void applyMobSpeedScaling(LivingEntity mob, int wave, double difficultyMultiplier) {
+        try {
+            org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
+            org.bukkit.attribute.AttributeInstance speedInstance = mob.getAttribute(speedAttr);
+            
+            if (speedInstance != null) {
+                double baseSpeed = speedInstance.getBaseValue();
+                
+                // Increase speed by 0.5% per wave, capped at +50% (much slower scaling)
+                double waveSpeedMultiplier = 1.0 + Math.min(0.5, wave * 0.005);
+                
+                // Additional scaling from difficulty (time-based) - reduced
+                double difficultySpeedBonus = Math.min(0.25, (difficultyMultiplier - 1.0) * 0.25);
+                
+                double newSpeed = baseSpeed * waveSpeedMultiplier * (1.0 + difficultySpeedBonus);
+                
+                speedInstance.setBaseValue(newSpeed);
+            }
+        } catch (Exception e) {
+            // Some mobs might not have speed attribute, ignore
+        }
+    }
+    
+    /**
+     * Apply armor to elite mobs in later waves (wave 10+)
+     * Armor increases with wave number to make elites more tanky
+     * 
+     * Note: Not all mobs can wear armor. Only mobs with equipment slots can:
+     * - Zombies, Skeletons, Husks, Strays, Drowned: Can wear armor
+     * - Wither Skeletons, Vindicators, Pillagers: Can wear armor
+     * - Ravagers, Blazes, Endermen: Cannot wear armor (no equipment slots)
+     */
+    private void applyEliteArmor(LivingEntity mob, int wave) {
+        // Only mobs with equipment slots can wear armor
+        // Check if mob has equipment - if null, this mob type cannot wear armor
+        if (!(mob instanceof org.bukkit.entity.Mob)) {
+            return;
+        }
+        
+        try {
+            org.bukkit.entity.Mob mobEntity = (org.bukkit.entity.Mob) mob;
+            org.bukkit.inventory.EntityEquipment equipment = mobEntity.getEquipment();
+            if (equipment == null) {
+                // This mob type doesn't support equipment (e.g., Ravager, Blaze, Enderman)
+                return;
+            }
+            
+            // Calculate armor tier based on wave
+            // Wave 10-15: Iron armor
+            // Wave 16-20: Diamond armor
+            // Wave 21+: Netherite armor
+            org.bukkit.Material helmetMaterial;
+            org.bukkit.Material chestplateMaterial;
+            org.bukkit.Material leggingsMaterial;
+            org.bukkit.Material bootsMaterial;
+            int armorLevel = 0;
+            
+            if (wave >= 21) {
+                // Netherite armor (best protection)
+                helmetMaterial = org.bukkit.Material.NETHERITE_HELMET;
+                chestplateMaterial = org.bukkit.Material.NETHERITE_CHESTPLATE;
+                leggingsMaterial = org.bukkit.Material.NETHERITE_LEGGINGS;
+                bootsMaterial = org.bukkit.Material.NETHERITE_BOOTS;
+                armorLevel = 3; // Protection III
+            } else if (wave >= 16) {
+                // Diamond armor
+                helmetMaterial = org.bukkit.Material.DIAMOND_HELMET;
+                chestplateMaterial = org.bukkit.Material.DIAMOND_CHESTPLATE;
+                leggingsMaterial = org.bukkit.Material.DIAMOND_LEGGINGS;
+                bootsMaterial = org.bukkit.Material.DIAMOND_BOOTS;
+                armorLevel = 2; // Protection II
+            } else {
+                // Iron armor (wave 10-15)
+                helmetMaterial = org.bukkit.Material.IRON_HELMET;
+                chestplateMaterial = org.bukkit.Material.IRON_CHESTPLATE;
+                leggingsMaterial = org.bukkit.Material.IRON_LEGGINGS;
+                bootsMaterial = org.bukkit.Material.IRON_BOOTS;
+                armorLevel = 1; // Protection I
+            }
+            
+            // Create armor pieces with enchantments
+            org.bukkit.inventory.ItemStack helmet = new org.bukkit.inventory.ItemStack(helmetMaterial);
+            org.bukkit.inventory.ItemStack chestplate = new org.bukkit.inventory.ItemStack(chestplateMaterial);
+            org.bukkit.inventory.ItemStack leggings = new org.bukkit.inventory.ItemStack(leggingsMaterial);
+            org.bukkit.inventory.ItemStack boots = new org.bukkit.inventory.ItemStack(bootsMaterial);
+            
+            // Add Protection enchantment to all pieces
+            org.bukkit.enchantments.Enchantment protection = org.bukkit.enchantments.Enchantment.getByKey(org.bukkit.NamespacedKey.minecraft("protection"));
+            if (protection != null) {
+                helmet.addEnchantment(protection, armorLevel);
+                chestplate.addEnchantment(protection, armorLevel);
+                leggings.addEnchantment(protection, armorLevel);
+                boots.addEnchantment(protection, armorLevel);
+            }
+            
+            // Make armor unbreakable and undroppable
+            org.bukkit.inventory.meta.ItemMeta helmetMeta = helmet.getItemMeta();
+            if (helmetMeta != null) {
+                helmetMeta.setUnbreakable(true);
+                helmet.setItemMeta(helmetMeta);
+            }
+            org.bukkit.inventory.meta.ItemMeta chestplateMeta = chestplate.getItemMeta();
+            if (chestplateMeta != null) {
+                chestplateMeta.setUnbreakable(true);
+                chestplate.setItemMeta(chestplateMeta);
+            }
+            org.bukkit.inventory.meta.ItemMeta leggingsMeta = leggings.getItemMeta();
+            if (leggingsMeta != null) {
+                leggingsMeta.setUnbreakable(true);
+                leggings.setItemMeta(leggingsMeta);
+            }
+            org.bukkit.inventory.meta.ItemMeta bootsMeta = boots.getItemMeta();
+            if (bootsMeta != null) {
+                bootsMeta.setUnbreakable(true);
+                boots.setItemMeta(bootsMeta);
+            }
+            
+            // Equip the armor
+            equipment.setHelmet(helmet);
+            equipment.setChestplate(chestplate);
+            equipment.setLeggings(leggings);
+            equipment.setBoots(boots);
+            
+            // Make armor not drop on death
+            equipment.setHelmetDropChance(0.0f);
+            equipment.setChestplateDropChance(0.0f);
+            equipment.setLeggingsDropChance(0.0f);
+            equipment.setBootsDropChance(0.0f);
+        } catch (Exception e) {
+            // Some mobs might not support equipment, ignore
+            plugin.getLogger().fine("Failed to apply elite armor: " + e.getMessage());
+        }
+    }
+
+    private void levelUp(TeamRun teamRun) {
+        teamRun.setLevel(teamRun.getLevel() + 1);
+        teamRun.addExperience(-teamRun.getExperienceToNextLevel());
+        
+        // Less aggressive scaling for early levels (1-5), then standard 1.5x after
+        int currentLevel = teamRun.getLevel();
+        double scaleMultiplier;
+        if (currentLevel <= 5) {
+            // Early levels: 1.25x scaling (easier progression)
+            scaleMultiplier = 1.25;
+        } else {
+            // Later levels: 1.5x scaling (standard progression)
+            scaleMultiplier = 1.5;
+        }
+        teamRun.setExperienceToNextLevel((int) (teamRun.getExperienceToNextLevel() * scaleMultiplier));
+
+        // Flash XP bar and notify all players
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline()) {
+                player.sendMessage("§6§lLEVEL UP! §eLevel " + teamRun.getLevel());
+                player.sendMessage("§aChoose your power-up!");
+                
+                // Flash XP bar for level up
+                com.eldor.roguecraft.util.XPBar.flashLevelUp(player, teamRun.getLevel());
+            }
+        }
+        
+        // Open power-up GUI for all players
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline()) {
+                plugin.getGuiManager().openPowerUpGUI(player, teamRun);
+            }
+        }
+    }
+
+    public void endTeamRun(UUID teamId, Arena arena) {
+        TeamRun teamRun = plugin.getRunManager().getAllActiveTeamRuns().stream()
+            .filter(tr -> getTeamRunId(tr) != null && getTeamRunId(tr).equals(teamId))
+            .findFirst().orElse(null);
+            
+        if (teamRun != null) {
+            // Comprehensive cleanup
+            cleanupRun(teamRun, teamId, arena, true);
+            
+            // Notify all players
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    long elapsed = teamRun.getElapsedTime() / 1000;
+                    player.sendMessage("§cRun ended!");
+                    player.sendMessage("§eSurvived: §f" + elapsed + " seconds");
+                    player.sendMessage("§eWave reached: §f" + teamRun.getWave());
+                    player.sendMessage("§eLevel reached: §f" + teamRun.getLevel());
+                }
+            }
+
+            plugin.getRunManager().endTeamRun(teamId);
+        }
+
+        // Cancel tasks
+        BukkitTask gameTask = runTasks.remove(teamId);
+        if (gameTask != null) {
+            gameTask.cancel();
+        }
+
+        BukkitTask spawnTask = spawnTasks.remove(teamId);
+        if (spawnTask != null) {
+            spawnTask.cancel();
+        }
+        
+        BukkitTask regenTask = regenTasks.remove(teamId);
+        if (regenTask != null) {
+            regenTask.cancel();
+        }
+        
+        // Clean up last damage time tracking for all players in the team
+        if (teamRun != null) {
+            for (UUID playerId : teamRun.getPlayerIds()) {
+                lastDamageTime.remove(playerId);
+            }
+        }
+
+        if (arena != null) {
+            arena.setActive(false);
+        }
+    }
+
+    public void endRun(UUID playerId, Arena arena) {
+        // Check for team run first
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(playerId);
+        if (teamRun != null) {
+            UUID teamId = getTeamRunId(teamRun);
+            if (teamId != null && teamRun.getPlayerCount() <= 1) {
+                endTeamRun(teamId, arena);
+            } else {
+                // Just remove this player from team - still need full cleanup for this player
+                Player player = Bukkit.getPlayer(playerId);
+                if (player != null) {
+                    // Stop weapon auto-attack
+                    plugin.getWeaponManager().stopAutoAttack(player);
+                    // Stop health display
+                    BukkitTask healthTask = healthDisplayTasks.remove(playerId);
+                    if (healthTask != null) {
+                        healthTask.cancel();
+                    }
+                    // Remove XP bar
+                    com.eldor.roguecraft.util.XPBar.removeXPBar(player);
+                    // Reset attributes
+                    resetPlayerAttributes(player);
+                    // Clean up shrine channeling
+                    plugin.getShrineManager().cleanupPlayerChanneling(player);
+                    // Clear GUI queue
+                    plugin.getGuiManager().clearQueue(playerId);
+                }
+                plugin.getRunManager().endRun(playerId);
+            }
+            return;
+        }
+
+        // Single player run
+        Run run = plugin.getRunManager().getRun(playerId);
+        if (run != null) {
+            // Comprehensive cleanup
+            cleanupRun(run, playerId, arena, false);
+            
+            Player player = Bukkit.getPlayer(playerId);
+            if (player != null) {
+                long elapsed = run.getElapsedTime() / 1000;
+                player.sendMessage("§cRun ended!");
+                player.sendMessage("§eSurvived: §f" + elapsed + " seconds");
+                player.sendMessage("§eWave reached: §f" + run.getWave());
+                player.sendMessage("§eLevel reached: §f" + run.getLevel());
+            }
+            
+            plugin.getRunManager().endRun(playerId);
+        }
+
+        // Cancel tasks
+        BukkitTask gameTask = runTasks.remove(playerId);
+        if (gameTask != null) {
+            gameTask.cancel();
+        }
+
+        BukkitTask spawnTask = spawnTasks.remove(playerId);
+        if (spawnTask != null) {
+            spawnTask.cancel();
+        }
+        
+        // Clean up time freeze tracking
+        timeFreezeEndTime.remove(playerId);
+
+        if (arena != null) {
+            arena.setActive(false);
+        }
+    }
+    
+    /**
+     * Comprehensive cleanup function for runs
+     * Stops all active game mechanics, removes entities, and resets arena state
+     */
+    private void cleanupRun(Object run, UUID runId, Arena arena, boolean isTeamRun) {
+        // Mark run as inactive
+        if (run instanceof Run) {
+            ((Run) run).setActive(false);
+        } else if (run instanceof TeamRun) {
+            ((TeamRun) run).setActive(false);
+        }
+        
+        // 1. Stop all weapon auto-attacks, remove XP bars, stop health display, and clean up shrine channeling
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    plugin.getWeaponManager().stopAutoAttack(player);
+                    com.eldor.roguecraft.util.XPBar.removeXPBar(player);
+                    
+                    // Stop health display
+                    BukkitTask healthTask = healthDisplayTasks.remove(player.getUniqueId());
+                    if (healthTask != null) {
+                        healthTask.cancel();
+                    }
+                    
+                    // Clean up any active shrine channeling/GUI tasks
+                    plugin.getShrineManager().cleanupPlayerChanneling(player);
+                    
+                    // Reset health and speed to default
+                    resetPlayerAttributes(player);
+                    
+                    // Reset hunger to normal
+                    player.setFoodLevel(20);
+                    player.setSaturation(20.0f);
+                    player.setExhaustion(0.0f);
+                }
+            }
+        } else if (run instanceof Run) {
+            Player player = Bukkit.getPlayer(runId);
+            if (player != null) {
+                plugin.getWeaponManager().stopAutoAttack(player);
+                com.eldor.roguecraft.util.XPBar.removeXPBar(player);
+                
+                // Stop health display
+                BukkitTask healthTask = healthDisplayTasks.remove(player.getUniqueId());
+                if (healthTask != null) {
+                    healthTask.cancel();
+                }
+                
+                // Clean up any active shrine channeling/GUI tasks
+                plugin.getShrineManager().cleanupPlayerChanneling(player);
+                
+                // Reset health and speed to default
+                resetPlayerAttributes(player);
+            }
+        }
+        
+        // 2. Remove/restore world border
+        if (run instanceof TeamRun && arena != null) {
+            removeArenaBorder((TeamRun) run, arena);
+        }
+        
+        // 3. Unfreeze all mobs
+        Set<LivingEntity> frozen = frozenMobs.remove(runId);
+        if (frozen != null) {
+            for (LivingEntity mob : frozen) {
+                if (mob != null && !mob.isDead()) {
+                    mob.setAI(true);
+                    mob.setGravity(true);
+                }
+            }
+        }
+        
+        // 4. Remove all spawned mobs in arena
+        if (arena != null && arena.getCenter() != null) {
+            double radius = arena.getRadius();
+            for (org.bukkit.entity.Entity entity : arena.getCenter().getWorld().getNearbyEntities(
+                arena.getCenter(), radius, radius, radius)) {
+                if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                    entity.remove();
+                }
+            }
+        }
+        
+        // 5. Clean up boss spawn tracking
+        bossSpawnedWave.remove(runId);
+        timeFreezeEndTime.remove(runId);
+        lastDamageTime.remove(runId);
+        
+        // 5. Close any open GUIs for players
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    if (player.getOpenInventory().getTopInventory().getHolder() == null) {
+                        player.closeInventory();
+                    }
+                    teamRun.setPlayerInGUI(player.getUniqueId(), false);
+                }
+            }
+        } else if (run instanceof Run) {
+            Player player = Bukkit.getPlayer(runId);
+            if (player != null && player.isOnline()) {
+                if (player.getOpenInventory().getTopInventory().getHolder() == null) {
+                    player.closeInventory();
+                }
+            }
+        }
+        
+        // 6. Remove physical shrines
+        if (isTeamRun) {
+            plugin.getShrineManager().removeShrinesForRun(runId);
+        }
+        
+        // 7. Clear GUI queue for all players in the run
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null) {
+                    plugin.getGuiManager().clearQueue(player.getUniqueId());
+                }
+            }
+        } else if (run instanceof Run) {
+            plugin.getGuiManager().clearQueue(runId);
+        }
+        
+        // 8. Stop aura effects
+        plugin.getAuraManager().stopAuras(runId);
+        
+        // 9. Stop synergy tracking
+        plugin.getSynergyManager().stopSynergies(runId);
+        
+        // 10. Clear original border settings
+        originalBorders.remove(runId);
+    }
+
+    public void stopAllRuns() {
+        // Stop all team runs
+        for (UUID teamId : new ArrayList<>(runTasks.keySet())) {
+            Arena arena = plugin.getArenaManager().getDefaultArena();
+            endTeamRun(teamId, arena);
+        }
+        
+        // Stop all solo runs
+        for (UUID playerId : new ArrayList<>(runTasks.keySet())) {
+            Arena arena = plugin.getArenaManager().getDefaultArena();
+            endRun(playerId, arena);
+        }
+        
+        // Final cleanup - ensure everything is stopped
+        plugin.getWeaponManager().stopAllAutoAttacks();
+        
+        // Cancel all health display tasks
+        for (BukkitTask task : healthDisplayTasks.values()) {
+            if (task != null) {
+                task.cancel();
+            }
+        }
+        
+        runTasks.clear();
+        spawnTasks.clear();
+        healthDisplayTasks.clear();
+        frozenMobs.clear();
+        originalBorders.clear();
+    }
+    
+    private void resetPlayerAttributes(Player player) {
+        // Reset health to default 20
+        org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
+        org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
+        if (healthInstance != null) {
+            healthInstance.setBaseValue(20.0);
+            if (player.getHealth() > 20.0) {
+                player.setHealth(20.0);
+            }
+        }
+        
+        // Reset speed to default 0.1
+        org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
+        org.bukkit.attribute.AttributeInstance speedInstance = player.getAttribute(speedAttr);
+        if (speedInstance != null) {
+            speedInstance.setBaseValue(0.1);
+        }
+        
+        // Reset armor to default 0
+        org.bukkit.attribute.Attribute armorAttr = org.bukkit.attribute.Attribute.GENERIC_ARMOR;
+        org.bukkit.attribute.AttributeInstance armorInstance = player.getAttribute(armorAttr);
+        if (armorInstance != null) {
+            armorInstance.setBaseValue(0.0);
+        }
+    }
+}

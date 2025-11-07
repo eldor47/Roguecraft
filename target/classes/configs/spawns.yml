@@ -1,0 +1,414 @@
+# Spawn Configuration
+# Define mob spawns for each wave
+# 
+# Format:
+#   wave_number:
+#     mob_name:
+#       type: ENTITY_TYPE (e.g., ZOMBIE, SKELETON, SPIDER, CREEPER, ENDERMAN, WITCH, WITHER_SKELETON)
+#       count: number of mobs to spawn
+#       weight: spawn probability (1.0 = always spawn, 0.5 = 50% chance, etc.)
+#       elite: true/false - whether this mob should be elite (more HP/damage)
+#
+# If a wave is not defined, the system will scale up from the nearest lower wave
+# You can define specific waves or let the system auto-scale between defined waves
+
+spawns:
+  # Wave 1 - Starting wave, basic enemies (no skeletons)
+  "1":
+    zombie_1:
+      type: ZOMBIE
+      count: 8
+      weight: 1.0
+      elite: false
+
+  # Wave 2 - Slight increase (no skeletons)
+  "2":
+    zombie_2:
+      type: ZOMBIE
+      count: 10
+      weight: 1.0
+      elite: false
+    spider_1:
+      type: SPIDER
+      count: 2
+      weight: 0.7
+      elite: false
+
+  # Wave 3 - Introduce more variety (no skeletons)
+  "3":
+    zombie_3:
+      type: ZOMBIE
+      count: 12
+      weight: 1.0
+      elite: false
+    spider_2:
+      type: SPIDER
+      count: 4
+      weight: 0.8
+      elite: false
+
+  # Wave 4 - Introduce husks and strays (no skeletons)
+  "4":
+    zombie_4:
+      type: ZOMBIE
+      count: 10
+      weight: 1.0
+      elite: false
+    spider_3:
+      type: SPIDER
+      count: 5
+      weight: 0.8
+      elite: false
+    husk_1:
+      type: HUSK
+      count: 3
+      weight: 0.7
+      elite: false
+    stray_1:
+      type: STRAY
+      count: 3
+      weight: 0.7
+      elite: false
+
+  # Wave 5 - Introduce creepers and skeletons (skeletons start here)
+  "5":
+    zombie_5:
+      type: ZOMBIE
+      count: 12
+      weight: 1.0
+      elite: false
+    skeleton_5:
+      type: SKELETON
+      count: 8
+      weight: 1.0
+      elite: false
+    spider_3:
+      type: SPIDER
+      count: 5
+      weight: 0.8
+      elite: false
+    creeper_1:
+      type: CREEPER
+      count: 2
+      weight: 0.5
+      elite: false
+
+  # Wave 6 - Introduce cave spiders and slimes
+  "6":
+    zombie_6:
+      type: ZOMBIE
+      count: 12
+      weight: 1.0
+      elite: false
+    skeleton_6:
+      type: SKELETON
+      count: 10
+      weight: 1.0
+      elite: false
+    spider_4:
+      type: SPIDER
+      count: 5
+      weight: 0.8
+      elite: false
+    creeper_2:
+      type: CREEPER
+      count: 3
+      weight: 0.5
+      elite: false
+    cave_spider_1:
+      type: CAVE_SPIDER
+      count: 3
+      weight: 0.4
+      elite: false
+    slime_1:
+      type: SLIME
+      count: 2
+      weight: 0.3
+      elite: false
+
+  # Wave 7
+  "7":
+    zombie_7:
+      type: ZOMBIE
+      count: 16
+      weight: 1.0
+      elite: false
+    skeleton_7:
+      type: SKELETON
+      count: 14
+      weight: 1.0
+      elite: false
+    spider_5:
+      type: SPIDER
+      count: 7
+      weight: 0.8
+      elite: false
+    creeper_3:
+      type: CREEPER
+      count: 4
+      weight: 0.5
+      elite: false
+
+  # Wave 8 - Introduce endermen and drowned
+  "8":
+    zombie_8:
+      type: ZOMBIE
+      count: 15
+      weight: 1.0
+      elite: false
+    skeleton_8:
+      type: SKELETON
+      count: 13
+      weight: 1.0
+      elite: false
+    spider_6:
+      type: SPIDER
+      count: 7
+      weight: 0.8
+      elite: false
+    creeper_4:
+      type: CREEPER
+      count: 4
+      weight: 0.5
+      elite: false
+    enderman_1:
+      type: ENDERMAN
+      count: 2
+      weight: 0.3
+      elite: false
+    drowned_1:
+      type: DROWNED
+      count: 3
+      weight: 0.5
+      elite: false
+
+  # Wave 9
+  "9":
+    zombie_9:
+      type: ZOMBIE
+      count: 20
+      weight: 1.0
+      elite: false
+    skeleton_9:
+      type: SKELETON
+      count: 18
+      weight: 1.0
+      elite: false
+    spider_7:
+      type: SPIDER
+      count: 9
+      weight: 0.8
+      elite: false
+    creeper_5:
+      type: CREEPER
+      count: 6
+      weight: 0.5
+      elite: false
+    enderman_2:
+      type: ENDERMAN
+      count: 3
+      weight: 0.3
+      elite: false
+
+  # Wave 10 - First elite wave
+  "10":
+    zombie_10:
+      type: ZOMBIE
+      count: 22
+      weight: 1.0
+      elite: true
+    skeleton_10:
+      type: SKELETON
+      count: 20
+      weight: 1.0
+      elite: true
+    spider_8:
+      type: SPIDER
+      count: 10
+      weight: 0.8
+      elite: false
+    creeper_6:
+      type: CREEPER
+      count: 7
+      weight: 0.5
+      elite: false
+    enderman_3:
+      type: ENDERMAN
+      count: 4
+      weight: 0.3
+      elite: false
+
+  # Wave 12 - Introduce witches and pillagers
+  "12":
+    zombie_12:
+      type: ZOMBIE
+      count: 20
+      weight: 1.0
+      elite: true
+    skeleton_12:
+      type: SKELETON
+      count: 18
+      weight: 1.0
+      elite: true
+    spider_9:
+      type: SPIDER
+      count: 10
+      weight: 0.8
+      elite: true
+    creeper_7:
+      type: CREEPER
+      count: 7
+      weight: 0.5
+      elite: false
+    enderman_4:
+      type: ENDERMAN
+      count: 4
+      weight: 0.5
+      elite: true
+    witch_1:
+      type: WITCH
+      count: 2
+      weight: 0.3
+      elite: false
+    pillager_1:
+      type: PILLAGER
+      count: 2
+      weight: 0.4
+      elite: false
+    phantom_1:
+      type: PHANTOM
+      count: 1
+      weight: 0.3
+      elite: false
+
+  # Wave 15 - Introduce wither skeletons, vindicators, and silverfish
+  "15":
+    zombie_15:
+      type: ZOMBIE
+      count: 25
+      weight: 1.0
+      elite: true
+    skeleton_15:
+      type: SKELETON
+      count: 22
+      weight: 1.0
+      elite: true
+    spider_10:
+      type: SPIDER
+      count: 12
+      weight: 0.8
+      elite: true
+    creeper_8:
+      type: CREEPER
+      count: 8
+      weight: 0.5
+      elite: true
+    enderman_5:
+      type: ENDERMAN
+      count: 5
+      weight: 0.5
+      elite: true
+    witch_2:
+      type: WITCH
+      count: 3
+      weight: 0.3
+      elite: false
+    wither_skeleton_1:
+      type: WITHER_SKELETON
+      count: 3
+      weight: 0.3
+      elite: true
+    vindicator_1:
+      type: VINDICATOR
+      count: 2
+      weight: 0.4
+      elite: true
+    silverfish_1:
+      type: SILVERFISH
+      count: 5
+      weight: 0.5
+      elite: false
+    phantom_2:
+      type: PHANTOM
+      count: 2
+      weight: 0.4
+      elite: false
+
+  # Wave 20 - High difficulty milestone, introduce ravagers
+  "20":
+    zombie_20:
+      type: ZOMBIE
+      count: 28
+      weight: 1.0
+      elite: true
+    skeleton_20:
+      type: SKELETON
+      count: 25
+      weight: 1.0
+      elite: true
+    spider_11:
+      type: SPIDER
+      count: 15
+      weight: 0.8
+      elite: true
+    creeper_9:
+      type: CREEPER
+      count: 10
+      weight: 0.5
+      elite: true
+    enderman_6:
+      type: ENDERMAN
+      count: 6
+      weight: 0.5
+      elite: true
+    witch_3:
+      type: WITCH
+      count: 4
+      weight: 0.3
+      elite: true
+    wither_skeleton_2:
+      type: WITHER_SKELETON
+      count: 4
+      weight: 0.3
+      elite: true
+    pillager_2:
+      type: PILLAGER
+      count: 3
+      weight: 0.5
+      elite: true
+    vindicator_2:
+      type: VINDICATOR
+      count: 3
+      weight: 0.5
+      elite: true
+    phantom_3:
+      type: PHANTOM
+      count: 3
+      weight: 0.4
+      elite: true
+    ravager_1:
+      type: RAVAGER
+      count: 3
+      weight: 0.8
+      elite: true
+
+# Elite Mobs Configuration
+# This section defines which entity types can be used for elite variants
+# Currently elites just get more HP/damage, but you can extend this later
+elites:
+  elite_zombie: ZOMBIE
+  elite_skeleton: SKELETON
+  elite_spider: SPIDER
+  elite_enderman: ENDERMAN
+  elite_creeper: CREEPER
+  elite_witch: WITCH
+  elite_wither_skeleton: WITHER_SKELETON
+  elite_husk: HUSK
+  elite_stray: STRAY
+  elite_cave_spider: CAVE_SPIDER
+  elite_drowned: DROWNED
+  elite_pillager: PILLAGER
+  elite_vindicator: VINDICATOR
+  elite_phantom: PHANTOM
+  elite_ravager: RAVAGER
+  elite_blaze: BLAZE

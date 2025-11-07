@@ -1,0 +1,156 @@
+# Power-Up Cards Configuration
+# Define all available power-ups that players can collect
+
+powerups:
+  # ===== WEAPON UPGRADES =====
+  weapon_upgrade:
+    name: "Weapon Upgrade"
+    description: "Upgrade your weapon to the next level"
+    rarity: COMMON
+    type: WEAPON_MOD
+    icon: NETHER_STAR
+    value: 1.0
+    synergies: []
+    
+  weapon_damage_boost:
+    name: "Weapon Damage+"
+    description: "Increases your weapon damage by 25%"
+    rarity: RARE
+    type: WEAPON_MOD
+    icon: BLAZE_POWDER
+    value: 0.25
+    synergies: []
+    
+  weapon_range_boost:
+    name: "Extended Range"
+    description: "Increases your weapon range by 30%"
+    rarity: RARE
+    type: WEAPON_MOD
+    icon: SPYGLASS
+    value: 0.30
+    synergies: []
+    
+  weapon_attack_speed_boost:
+    name: "Rapid Fire"
+    description: "Increases your weapon attack speed by 40%"
+    rarity: EPIC
+    type: WEAPON_MOD
+    icon: CLOCK
+    value: 0.40
+    synergies: []
+    
+  weapon_multishot:
+    name: "Multishot"
+    description: "Fire an additional projectile"
+    rarity: EPIC
+    type: WEAPON_MOD
+    icon: SPECTRAL_ARROW
+    value: 1.0
+    synergies: []
+    
+  weapon_aoe_boost:
+    name: "Explosive Power"
+    description: "Increases your weapon AOE by 50%"
+    rarity: RARE
+    type: WEAPON_MOD
+    icon: TNT
+    value: 0.50
+    synergies: []
+    
+  weapon_master:
+    name: "Weapon Master"
+    description: "Massively improves all weapon stats"
+    rarity: LEGENDARY
+    type: WEAPON_MOD
+    icon: ENCHANTED_GOLDEN_APPLE
+    value: 0.50
+    synergies: [weapon_damage_boost, weapon_attack_speed_boost, weapon_range_boost]
+
+  # ===== ORIGINAL POWER-UPS =====
+  # Common Power-Ups
+  health_boost_1:
+    name: "Health Boost"
+    description: "Increases your maximum health by 2 hearts"
+    rarity: COMMON
+    type: STAT_BOOST
+    icon: RED_DYE
+    value: 4.0
+    synergies: []
+
+  damage_boost_1:
+    name: "Damage Boost"
+    description: "Increases your damage by 10%"
+    rarity: COMMON
+    type: STAT_BOOST
+    icon: IRON_SWORD
+    value: 0.1
+    synergies: []
+
+  speed_boost_1:
+    name: "Speed Boost"
+    description: "Increases your movement speed by 10%"
+    rarity: COMMON
+    type: STAT_BOOST
+    icon: SUGAR
+    value: 0.1
+    synergies: []
+
+  # Rare Power-Ups
+  health_boost_2:
+    name: "Greater Health Boost"
+    description: "Increases your maximum health by 4 hearts"
+    rarity: RARE
+    type: STAT_BOOST
+    icon: RED_DYE
+    value: 8.0
+    synergies: []
+
+  damage_boost_2:
+    name: "Greater Damage Boost"
+    description: "Increases your damage by 20%"
+    rarity: RARE
+    type: STAT_BOOST
+    icon: DIAMOND_SWORD
+    value: 0.2
+    synergies: []
+
+  lifesteal:
+    name: "Lifesteal"
+    description: "Heal for 10% of damage dealt"
+    rarity: RARE
+    type: AURA
+    icon: GOLDEN_APPLE
+    value: 0.1
+    synergies: []
+
+  # Epic Power-Ups
+  crit_strike:
+    name: "Critical Strike"
+    description: "20% chance to deal double damage"
+    rarity: EPIC
+    type: STAT_BOOST
+    icon: NETHERITE_SWORD
+    value: 0.2
+    synergies: []
+
+  berserker:
+    name: "Berserker"
+    description: "Deal more damage the lower your health"
+    rarity: EPIC
+    type: AURA
+    icon: TOTEM_OF_UNDYING
+    value: 1.5
+    synergies: []
+
+  # Legendary Power-Ups
+  god_mode:
+    name: "God Mode"
+    description: "Become invincible for 10 seconds (once per wave)"
+    rarity: LEGENDARY
+    type: SHRINE
+    icon: ENCHANTED_BOOK
+    value: 10.0
+    synergies: []
+
+
+
