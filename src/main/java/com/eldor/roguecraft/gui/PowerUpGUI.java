@@ -4,6 +4,7 @@ import com.eldor.roguecraft.RoguecraftPlugin;
 import com.eldor.roguecraft.models.PowerUp;
 import com.eldor.roguecraft.models.Run;
 import com.eldor.roguecraft.models.TeamRun;
+import com.eldor.roguecraft.models.Weapon;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -17,7 +18,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class PowerUpGUI implements Listener {
     private final RoguecraftPlugin plugin;
@@ -54,8 +57,14 @@ public class PowerUpGUI implements Listener {
         Bukkit.getPluginManager().registerEvents(this, plugin);
         teamRun.setPlayerInGUI(player.getUniqueId(), true);
         
-        // Stop weapon auto-attack while in GUI
-        plugin.getWeaponManager().stopAutoAttack(player);
+        // Stop ALL players' weapon auto-attacks when ANY player opens GUI (team-wide pause)
+        if (teamRun.getWeapon() != null) {
+            for (Player teamPlayer : teamRun.getPlayers()) {
+                if (teamPlayer != null && teamPlayer.isOnline()) {
+                    plugin.getWeaponManager().stopAutoAttack(teamPlayer);
+                }
+            }
+        }
     }
     
     private Run getEffectiveRun() {
@@ -151,10 +160,6 @@ public class PowerUpGUI implements Listener {
         lore.add("");
         
         if (run != null) {
-            lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + run.getLevel());
-            lore.add(ChatColor.YELLOW + "Wave: " + ChatColor.WHITE + run.getWave());
-            lore.add(ChatColor.YELLOW + "XP: " + ChatColor.WHITE + run.getExperience() + "/" + run.getExperienceToNextLevel());
-            lore.add("");
             lore.add(ChatColor.GREEN + "Health: " + ChatColor.WHITE + String.format("%.1f", run.getStat("health")));
             lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", run.getStat("damage")));
             lore.add(ChatColor.AQUA + "Speed: " + ChatColor.WHITE + String.format("%.1f", run.getStat("speed")));
@@ -182,12 +187,25 @@ public class PowerUpGUI implements Listener {
                     lore.add(ChatColor.YELLOW + "  • " + aura);
                 }
             }
+            
+            // Show weapon stats
+            Weapon weapon = run.getWeapon();
+            if (weapon != null) {
+                lore.add("");
+                lore.add(ChatColor.GOLD + "Weapon Stats:");
+                lore.add(ChatColor.YELLOW + "Type: " + ChatColor.WHITE + weapon.getType().getDisplayName());
+                lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + weapon.getLevel());
+                lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", weapon.getDamage()));
+                lore.add(ChatColor.AQUA + "Range: " + ChatColor.WHITE + String.format("%.1f", weapon.getRange()) + " blocks");
+                lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", weapon.getAttackSpeed()) + "/s");
+                if (weapon.getProjectileCount() > 1) {
+                    lore.add(ChatColor.LIGHT_PURPLE + "Projectiles: " + ChatColor.WHITE + weapon.getProjectileCount());
+                }
+                if (weapon.getAreaOfEffect() > 0) {
+                    lore.add(ChatColor.GOLD + "AOE: " + ChatColor.WHITE + String.format("%.1f", weapon.getAreaOfEffect()) + " blocks");
+                }
+            }
         } else if (teamRun != null) {
-            lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + teamRun.getLevel());
-            lore.add(ChatColor.YELLOW + "Wave: " + ChatColor.WHITE + teamRun.getWave());
-            lore.add(ChatColor.YELLOW + "XP: " + ChatColor.WHITE + teamRun.getExperience() + "/" + teamRun.getExperienceToNextLevel());
-            lore.add(ChatColor.BLUE + "Team Size: " + ChatColor.WHITE + teamRun.getPlayerCount());
-            lore.add("");
             lore.add(ChatColor.GREEN + "Health: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("health")));
             lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("damage")));
             lore.add(ChatColor.AQUA + "Speed: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("speed")));
@@ -215,6 +233,24 @@ public class PowerUpGUI implements Listener {
                     lore.add(ChatColor.YELLOW + "  • " + aura);
                 }
             }
+            
+            // Show weapon stats
+            Weapon weapon = teamRun.getWeapon();
+            if (weapon != null) {
+                lore.add("");
+                lore.add(ChatColor.GOLD + "Weapon Stats:");
+                lore.add(ChatColor.YELLOW + "Type: " + ChatColor.WHITE + weapon.getType().getDisplayName());
+                lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + weapon.getLevel());
+                lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", weapon.getDamage()));
+                lore.add(ChatColor.AQUA + "Range: " + ChatColor.WHITE + String.format("%.1f", weapon.getRange()) + " blocks");
+                lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", weapon.getAttackSpeed()) + "/s");
+                if (weapon.getProjectileCount() > 1) {
+                    lore.add(ChatColor.LIGHT_PURPLE + "Projectiles: " + ChatColor.WHITE + weapon.getProjectileCount());
+                }
+                if (weapon.getAreaOfEffect() > 0) {
+                    lore.add(ChatColor.GOLD + "AOE: " + ChatColor.WHITE + String.format("%.1f", weapon.getAreaOfEffect()) + " blocks");
+                }
+            }
         }
         
         statsMeta.setLore(lore);
@@ -237,6 +273,46 @@ public class PowerUpGUI implements Listener {
         lore.add(ChatColor.YELLOW + "Rarity: " + rarityColor + powerUp.getRarity().name());
         lore.add(ChatColor.YELLOW + "Type: " + ChatColor.WHITE + powerUp.getType().name());
         
+        // Add predicted weapon stats for weapon upgrades
+        if (powerUp.getType() == PowerUp.PowerUpType.WEAPON_UPGRADE) {
+            Weapon weapon = run != null ? run.getWeapon() : (teamRun != null ? teamRun.getWeapon() : null);
+            if (weapon != null) {
+                int levels = (int) powerUp.getValue();
+                PredictedWeaponStats predicted = calculatePredictedWeaponStats(weapon, levels);
+                
+                lore.add("");
+                lore.add(ChatColor.GOLD + "⚔ Weapon Upgrade Preview:");
+                lore.add(ChatColor.GRAY + "Level: " + ChatColor.WHITE + weapon.getLevel() + 
+                         ChatColor.GRAY + " → " + ChatColor.GREEN + predicted.newLevel);
+                
+                if (predicted.damageChange > 0) {
+                    lore.add(ChatColor.RED + "  Damage: " + ChatColor.WHITE + String.format("%.1f", weapon.getDamage()) + 
+                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", predicted.newDamage) + 
+                             ChatColor.GRAY + " (+" + String.format("%.1f", predicted.damageChange) + ")");
+                }
+                if (predicted.rangeChange > 0) {
+                    lore.add(ChatColor.AQUA + "  Range: " + ChatColor.WHITE + String.format("%.1f", weapon.getRange()) + 
+                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", predicted.newRange) + 
+                             ChatColor.GRAY + " (+" + String.format("%.1f", predicted.rangeChange) + " blocks)");
+                }
+                if (predicted.speedChange > 0) {
+                    lore.add(ChatColor.GREEN + "  Attack Speed: " + ChatColor.WHITE + String.format("%.2f", weapon.getAttackSpeed()) + 
+                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", predicted.newAttackSpeed) + 
+                             ChatColor.GRAY + " (+" + String.format("%.2f", predicted.speedChange) + "/s)");
+                }
+                if (predicted.projectileChange > 0) {
+                    lore.add(ChatColor.LIGHT_PURPLE + "  Projectiles: " + ChatColor.WHITE + weapon.getProjectileCount() + 
+                             ChatColor.GRAY + " → " + ChatColor.GREEN + predicted.newProjectiles + 
+                             ChatColor.GRAY + " (+" + predicted.projectileChange + ")");
+                }
+                if (predicted.aoeChange > 0) {
+                    lore.add(ChatColor.GOLD + "  AOE: " + ChatColor.WHITE + String.format("%.1f", weapon.getAreaOfEffect()) + 
+                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", predicted.newAOE) + 
+                             ChatColor.GRAY + " (+" + String.format("%.1f", predicted.aoeChange) + " blocks)");
+                }
+            }
+        }
+        
         if (powerUp.getSynergies().length > 0) {
             lore.add("");
             lore.add(ChatColor.AQUA + "Synergies:");
@@ -248,6 +324,122 @@ public class PowerUpGUI implements Listener {
         meta.setLore(lore);
         item.setItemMeta(meta);
         inventory.setItem(slot, item);
+    }
+    
+    /**
+     * Calculate predicted weapon stats after upgrade without modifying the weapon
+     */
+    private static class PredictedWeaponStats {
+        int newLevel;
+        double newDamage;
+        double newRange;
+        double newAttackSpeed;
+        int newProjectiles;
+        double newAOE;
+        double damageChange;
+        double rangeChange;
+        double speedChange;
+        int projectileChange;
+        double aoeChange;
+    }
+    
+    private PredictedWeaponStats calculatePredictedWeaponStats(Weapon weapon, int levels) {
+        PredictedWeaponStats stats = new PredictedWeaponStats();
+        
+        // Start with current stats
+        int currentLevel = weapon.getLevel();
+        double currentDamage = weapon.getDamage();
+        double currentRange = weapon.getRange();
+        double currentAttackSpeed = weapon.getAttackSpeed();
+        int currentProjectiles = weapon.getProjectileCount();
+        double currentAOE = weapon.getAreaOfEffect();
+        
+        // Simulate upgrades
+        int newLevel = currentLevel;
+        double newDamage = currentDamage;
+        double newRange = currentRange;
+        double newAttackSpeed = currentAttackSpeed;
+        int newProjectiles = currentProjectiles;
+        double newAOE = currentAOE;
+        
+        Weapon.WeaponType type = weapon.getType();
+        
+        for (int i = 0; i < levels; i++) {
+            newLevel++;
+            
+            // Damage scaling - weapon-specific
+            if (type == Weapon.WeaponType.TNT_SPAWNER || type == Weapon.WeaponType.FIREBALL) {
+                newDamage *= 1.18;
+            } else if (type == Weapon.WeaponType.POTION_THROWER) {
+                newDamage *= 1.12;
+            } else if (type == Weapon.WeaponType.LIGHTNING_STRIKE) {
+                newDamage *= 1.10;
+            } else {
+                newDamage *= 1.15;
+            }
+            
+            // Range scaling - only increase every 2 levels
+            if (newLevel % 2 == 0) {
+                double maxRange = type.getBaseRange() * 2.0;
+                newRange = Math.min(newRange * 1.05, maxRange);
+            }
+            
+            // Attack speed scaling - weapon-specific
+            if (type == Weapon.WeaponType.ARROW_STORM) {
+                double maxAttackSpeed = type.getBaseAttackSpeed() * 2.0;
+                newAttackSpeed = Math.min(newAttackSpeed * 1.05, maxAttackSpeed);
+            } else if (type == Weapon.WeaponType.POTION_THROWER) {
+                double maxAttackSpeed = type.getBaseAttackSpeed() * 1.5;
+                newAttackSpeed = Math.min(newAttackSpeed * 1.05, maxAttackSpeed);
+            } else if (type == Weapon.WeaponType.LIGHTNING_STRIKE) {
+                double maxAttackSpeed = type.getBaseAttackSpeed() * 1.5;
+                newAttackSpeed = Math.min(newAttackSpeed * 1.05, maxAttackSpeed);
+            } else if (type == Weapon.WeaponType.TNT_SPAWNER || type == Weapon.WeaponType.FIREBALL) {
+                newAttackSpeed *= 1.12;
+            } else {
+                newAttackSpeed *= 1.1;
+            }
+            
+            // Projectile count scaling
+            if (type == Weapon.WeaponType.ARROW_STORM) {
+                if (newLevel % 5 == 0 && newProjectiles < 3) {
+                    newProjectiles++;
+                }
+            } else {
+                if (newLevel % 3 == 0) {
+                    newProjectiles++;
+                }
+            }
+            
+            // AOE scaling - weapon-specific
+            if (type == Weapon.WeaponType.POTION_THROWER) {
+                double maxAOE = type.getBaseAOE() * 1.3;
+                newAOE = Math.min(newAOE * 1.03, maxAOE);
+            } else if (type == Weapon.WeaponType.TNT_SPAWNER || type == Weapon.WeaponType.FIREBALL) {
+                double maxAOE = type.getBaseAOE() * 2.0;
+                newAOE = Math.min(newAOE * 1.07, maxAOE);
+            } else {
+                double maxAOE = type.getBaseAOE() * 1.5;
+                newAOE = Math.min(newAOE * 1.05, maxAOE);
+            }
+        }
+        
+        // Store results
+        stats.newLevel = newLevel;
+        stats.newDamage = newDamage;
+        stats.newRange = newRange;
+        stats.newAttackSpeed = newAttackSpeed;
+        stats.newProjectiles = newProjectiles;
+        stats.newAOE = newAOE;
+        
+        // Calculate changes
+        stats.damageChange = newDamage - currentDamage;
+        stats.rangeChange = newRange - currentRange;
+        stats.speedChange = newAttackSpeed - currentAttackSpeed;
+        stats.projectileChange = newProjectiles - currentProjectiles;
+        stats.aoeChange = newAOE - currentAOE;
+        
+        return stats;
     }
 
     private ChatColor getRarityColor(PowerUp.Rarity rarity) {
@@ -321,13 +513,59 @@ public class PowerUpGUI implements Listener {
                 applyStatBoost(powerUp, run);
                 break;
             case WEAPON_UPGRADE:
-                // Upgrade weapon
+                // Upgrade weapon and show stat changes
                 if (run.getWeapon() != null) {
+                    Weapon weapon = run.getWeapon();
                     int levels = (int) powerUp.getValue();
+                    
+                    // Store stats before upgrade
+                    int oldLevel = weapon.getLevel();
+                    double oldDamage = weapon.getDamage();
+                    double oldRange = weapon.getRange();
+                    double oldAttackSpeed = weapon.getAttackSpeed();
+                    int oldProjectiles = weapon.getProjectileCount();
+                    double oldAOE = weapon.getAreaOfEffect();
+                    
+                    // Apply upgrades
                     for (int i = 0; i < levels; i++) {
-                        run.getWeapon().upgrade();
+                        weapon.upgrade();
                     }
-                    player.sendMessage(ChatColor.GREEN + "Weapon upgraded to level " + run.getWeapon().getLevel() + "!");
+                    
+                    // Calculate changes
+                    double damageChange = weapon.getDamage() - oldDamage;
+                    double rangeChange = weapon.getRange() - oldRange;
+                    double speedChange = weapon.getAttackSpeed() - oldAttackSpeed;
+                    int projectileChange = weapon.getProjectileCount() - oldProjectiles;
+                    double aoeChange = weapon.getAreaOfEffect() - oldAOE;
+                    
+                    // Show upgrade message with stat changes
+                    player.sendMessage(ChatColor.GREEN + "⚔ Weapon upgraded to level " + weapon.getLevel() + "!");
+                    player.sendMessage(ChatColor.GRAY + "Stat Changes:");
+                    if (damageChange > 0) {
+                        player.sendMessage(ChatColor.RED + "  Damage: " + ChatColor.WHITE + String.format("%.1f", oldDamage) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getDamage()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", damageChange) + ")");
+                    }
+                    if (rangeChange > 0) {
+                        player.sendMessage(ChatColor.AQUA + "  Range: " + ChatColor.WHITE + String.format("%.1f", oldRange) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getRange()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", rangeChange) + " blocks)");
+                    }
+                    if (speedChange > 0) {
+                        player.sendMessage(ChatColor.GREEN + "  Attack Speed: " + ChatColor.WHITE + String.format("%.2f", oldAttackSpeed) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", weapon.getAttackSpeed()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.2f", speedChange) + "/s)");
+                    }
+                    if (projectileChange > 0) {
+                        player.sendMessage(ChatColor.LIGHT_PURPLE + "  Projectiles: " + ChatColor.WHITE + oldProjectiles + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + weapon.getProjectileCount() + 
+                                         ChatColor.GRAY + " (+" + projectileChange + ")");
+                    }
+                    if (aoeChange > 0) {
+                        player.sendMessage(ChatColor.GOLD + "  AOE: " + ChatColor.WHITE + String.format("%.1f", oldAOE) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getAreaOfEffect()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", aoeChange) + " blocks)");
+                    }
                 }
                 break;
             case WEAPON_MOD:
@@ -361,13 +599,63 @@ public class PowerUpGUI implements Listener {
                 applyStatBoost(powerUp, teamRun);
                 break;
             case WEAPON_UPGRADE:
-                // Upgrade weapon
+                // Upgrade weapon and show stat changes
                 if (teamRun.getWeapon() != null) {
+                    Weapon weapon = teamRun.getWeapon();
                     int levels = (int) powerUp.getValue();
+                    
+                    // Store stats before upgrade
+                    int oldLevel = weapon.getLevel();
+                    double oldDamage = weapon.getDamage();
+                    double oldRange = weapon.getRange();
+                    double oldAttackSpeed = weapon.getAttackSpeed();
+                    int oldProjectiles = weapon.getProjectileCount();
+                    double oldAOE = weapon.getAreaOfEffect();
+                    
+                    // Apply upgrades
                     for (int i = 0; i < levels; i++) {
-                        teamRun.getWeapon().upgrade();
+                        weapon.upgrade();
                     }
-                    player.sendMessage(ChatColor.GREEN + "Weapon upgraded to level " + teamRun.getWeapon().getLevel() + "!");
+                    
+                    // Calculate changes
+                    double damageChange = weapon.getDamage() - oldDamage;
+                    double rangeChange = weapon.getRange() - oldRange;
+                    double speedChange = weapon.getAttackSpeed() - oldAttackSpeed;
+                    int projectileChange = weapon.getProjectileCount() - oldProjectiles;
+                    double aoeChange = weapon.getAreaOfEffect() - oldAOE;
+                    
+                    // Show upgrade message with stat changes to all team members
+                    for (Player p : teamRun.getPlayers()) {
+                        if (p != null && p.isOnline()) {
+                            p.sendMessage(ChatColor.GREEN + "⚔ Weapon upgraded to level " + weapon.getLevel() + "!");
+                            p.sendMessage(ChatColor.GRAY + "Stat Changes:");
+                            if (damageChange > 0) {
+                                p.sendMessage(ChatColor.RED + "  Damage: " + ChatColor.WHITE + String.format("%.1f", oldDamage) + 
+                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getDamage()) + 
+                                             ChatColor.GRAY + " (+" + String.format("%.1f", damageChange) + ")");
+                            }
+                            if (rangeChange > 0) {
+                                p.sendMessage(ChatColor.AQUA + "  Range: " + ChatColor.WHITE + String.format("%.1f", oldRange) + 
+                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getRange()) + 
+                                             ChatColor.GRAY + " (+" + String.format("%.1f", rangeChange) + " blocks)");
+                            }
+                            if (speedChange > 0) {
+                                p.sendMessage(ChatColor.GREEN + "  Attack Speed: " + ChatColor.WHITE + String.format("%.2f", oldAttackSpeed) + 
+                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", weapon.getAttackSpeed()) + 
+                                             ChatColor.GRAY + " (+" + String.format("%.2f", speedChange) + "/s)");
+                            }
+                            if (projectileChange > 0) {
+                                p.sendMessage(ChatColor.LIGHT_PURPLE + "  Projectiles: " + ChatColor.WHITE + oldProjectiles + 
+                                             ChatColor.GRAY + " → " + ChatColor.GREEN + weapon.getProjectileCount() + 
+                                             ChatColor.GRAY + " (+" + projectileChange + ")");
+                            }
+                            if (aoeChange > 0) {
+                                p.sendMessage(ChatColor.GOLD + "  AOE: " + ChatColor.WHITE + String.format("%.1f", oldAOE) + 
+                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getAreaOfEffect()) + 
+                                             ChatColor.GRAY + " (+" + String.format("%.1f", aoeChange) + " blocks)");
+                            }
+                        }
+                    }
                 }
                 break;
             case WEAPON_MOD:
@@ -568,25 +856,37 @@ public class PowerUpGUI implements Listener {
      * Get list of active aura names
      */
     private List<String> getActiveAuraNames(Object run) {
-        List<String> auras = new ArrayList<>();
-        if (run == null) return auras;
-        
+        List<String> formattedAuras = new ArrayList<>();
+        if (run == null) return formattedAuras;
+
         List<com.eldor.roguecraft.models.PowerUp> powerUps;
         if (run instanceof com.eldor.roguecraft.models.TeamRun) {
             powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps();
         } else if (run instanceof com.eldor.roguecraft.models.Run) {
             powerUps = ((com.eldor.roguecraft.models.Run) run).getCollectedPowerUps();
         } else {
-            return auras;
+            return formattedAuras;
         }
-        
+
+        Map<String, Integer> auraCounts = new LinkedHashMap<>();
         for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
             if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
-                auras.add(powerUp.getName());
+                String name = powerUp.getName();
+                auraCounts.put(name, auraCounts.getOrDefault(name, 0) + 1);
             }
         }
-        
-        return auras;
+
+        for (Map.Entry<String, Integer> entry : auraCounts.entrySet()) {
+            String name = entry.getKey();
+            int count = entry.getValue();
+            if (count > 1) {
+                formattedAuras.add(name + " x" + count);
+            } else {
+                formattedAuras.add(name);
+            }
+        }
+
+        return formattedAuras;
     }
 
     private void reroll() {
@@ -607,9 +907,14 @@ public class PowerUpGUI implements Listener {
             if (teamRun != null) {
                 teamRun.setPlayerInGUI(player.getUniqueId(), false);
                 
-                // Restart weapon auto-attack for team runs
-                if (teamRun.getWeapon() != null) {
-                    plugin.getWeaponManager().startAutoAttack(player, teamRun.getWeapon());
+                // Only restart ALL players' weapon auto-attacks if NO other players are in GUI
+                // This ensures the game stays paused while any player is selecting a power-up
+                if (!teamRun.hasAnyPlayerInGUI() && teamRun.getWeapon() != null) {
+                    for (Player teamPlayer : teamRun.getPlayers()) {
+                        if (teamPlayer != null && teamPlayer.isOnline()) {
+                            plugin.getWeaponManager().startAutoAttack(teamPlayer, teamRun.getWeapon());
+                        }
+                    }
                 }
             } else if (run != null) {
                 // Restart weapon auto-attack for solo runs
@@ -671,4 +976,5 @@ public class PowerUpGUI implements Listener {
             }
         }
     }
+    
 }

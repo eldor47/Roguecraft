@@ -54,24 +54,22 @@ drops:
   # Disable normal mob drops
   disable-normal-drops: true
   
-  # XP Token drops (most common - baseline)
+  # XP Token drops (always drop from every mob)
   xp-token:
     enabled: true
-    base-chance: 0.05  # 5% base chance
-    elite-bonus: 0.10  # Elite mobs get +10% chance (total 15%)
-    xp-amount: 50      # XP granted per token
+    xp-amount: 5  # Base XP per token (scales with level)
     
-  # Heart drops (healing) - much rarer
+  # Heart drops (healing)
   heart:
     enabled: true
-    base-chance: 0.005  # 0.5% base chance (much rarer)
-    elite-bonus: 0.015  # Elite mobs get +1.5% chance (total 2%)
-    heal-amount: 4.0   # Health restored per heart (2 hearts)
+    base-chance: 0.03  # 3% base chance
+    elite-bonus: 0.10  # Elite mobs get +10% chance
+    heal-amount: 10.0   # Health restored per heart
   
-  # Power-Up drops (very rare)
+  # Power-Up drops (Magnet, Speed Boost, Time Freeze, Nuclear Strike, Double XP)
   powerup:
     enabled: true
-    base-chance: 0.0025  # 0.25% base chance (very rare - only increases with drop_rate stat)
+    base-chance: 0.02  # 2% base chance (scales with drop_rate stat)
 
 # Messages
 messages:

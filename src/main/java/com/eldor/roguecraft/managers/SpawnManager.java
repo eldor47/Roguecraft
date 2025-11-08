@@ -179,7 +179,7 @@ public class SpawnManager {
     
     /**
      * Get spawns for infinite wave mode
-     * Only spawns 1-2 difficult mob types that get progressively harder
+     * Only spawns Wither Skeletons to prevent mob infighting
      */
     private List<SpawnEntry> getInfiniteWaveSpawns(int wave, int maxWave) {
         List<SpawnEntry> spawns = new ArrayList<>();
@@ -201,10 +201,9 @@ public class SpawnManager {
                 }
             }
         } else {
-            // Default: Only Wither Skeletons and Endermen
+            // Default: Only Wither Skeletons
             mobTypes = new ArrayList<>();
             mobTypes.add(EntityType.WITHER_SKELETON);
-            mobTypes.add(EntityType.ENDERMAN);
         }
         
         // Ensure we have at least one type
@@ -229,20 +228,10 @@ public class SpawnManager {
         double eliteIncreasePerWave = infiniteSection != null ? infiniteSection.getDouble("elite-increase-per-wave", 0.025) : 0.025;
         double eliteChance = Math.min(0.85, eliteBaseChance + (infiniteWaveNumber * eliteIncreasePerWave)); // Scales from base, caps at 85%
         
-        // Randomly select 2-3 mob types from the list each wave for variety and difficulty
-        // If we have 3+ types, randomly select 2-3; otherwise use all available types
-        List<EntityType> selectedTypes;
-        if (mobTypes.size() >= 3) {
-            // Randomly select 2-3 types (more variety)
-            int numToSelect = 2 + (int)(Math.random() * 2); // 2 or 3
-            Collections.shuffle(mobTypes);
-            selectedTypes = new ArrayList<>(mobTypes.subList(0, Math.min(numToSelect, mobTypes.size())));
-        } else {
-            // Use all available types if we have fewer than 3
-            selectedTypes = new ArrayList<>(mobTypes);
-        }
+        // Use all available types (typically just Wither Skeletons to prevent mob infighting)
+        List<EntityType> selectedTypes = new ArrayList<>(mobTypes);
         
-        // Distribute spawn count across selected types (slightly reduce per type to account for multiple types)
+        // Distribute spawn count across selected types
         int spawnsPerType = (int) Math.ceil(spawnCount / (double) selectedTypes.size());
         
         // Spawn selected types

@@ -181,10 +181,47 @@ public class PlayerListener implements Listener {
                 boolean isEliteBoss = entity.hasMetadata("roguecraft_elite_boss");
                 
                 if (isElite || isEliteBoss || isLegendary) {
-                    // Elite boss (Wither) gets very high resistance (90%)
+                    // Elite boss (Wither) gets very high resistance that scales with player level
                     if (isEliteBoss) {
+                        // Get player level from the run
+                        int playerLevel = 1;
+                        TeamRun teamRun = null;
+                        Run run = null;
+                        
+                        // Try to find the active run by checking nearby players
+                        for (Player player : entity.getWorld().getPlayers()) {
+                            if (entity.getLocation().distance(player.getLocation()) < 100) {
+                                teamRun = plugin.getRunManager().getTeamRun(player);
+                                if (teamRun != null && teamRun.isActive()) {
+                                    playerLevel = teamRun.getLevel();
+                                    break;
+                                } else {
+                                    run = plugin.getRunManager().getRun(player);
+                                    if (run != null && run.isActive()) {
+                                        playerLevel = run.getLevel();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Base resistance: 90% (10% damage taken)
+                        // Scale up resistance for overleveled players: +0.5% per level above 10
+                        // Example: Level 10 = 90%, Level 20 = 95%, Level 30 = 98% (capped)
+                        double baseResistance = 0.90; // 90% base
+                        double levelScaling = 0.0;
+                        
+                        if (playerLevel > 10) {
+                            // Add 0.5% resistance per level above 10
+                            levelScaling = (playerLevel - 10) * 0.005; // 0.5% per level
+                        }
+                        
+                        double totalResistance = baseResistance + levelScaling;
+                        totalResistance = Math.min(0.98, totalResistance); // Cap at 98% max
+                        
+                        // Apply resistance to damage
                         double originalDamage = event.getDamage();
-                        double resistedDamage = originalDamage * 0.10; // 90% damage reduction
+                        double resistedDamage = originalDamage * (1.0 - totalResistance);
                         event.setDamage(resistedDamage);
                         return; // Skip normal elite resistance calculation
                     }
@@ -225,11 +262,12 @@ public class PlayerListener implements Listener {
                         boolean isInfiniteWave = wave > maxWave;
                         
                         if (isInfiniteWave) {
-                            // Infinite wave scaling: 30% base + 3% per wave beyond maxWave
-                            // Wave 30 = 60% resistance, caps at 98% max
+                            // Infinite wave scaling: 30% base + 5% per wave beyond maxWave
+                            // Wave 34 = 100% resistance (invulnerability) - game ends when mobs become invulnerable
+                            // No cap - allows reaching 100% to force game end
                             int infiniteWaveNumber = wave - maxWave;
-                            resistancePercent = 0.30 + (infiniteWaveNumber * 0.03); // 3% per infinite wave
-                            resistancePercent = Math.min(0.98, resistancePercent); // Cap at 98% max
+                            resistancePercent = 0.30 + (infiniteWaveNumber * 0.05); // 5% per infinite wave
+                            resistancePercent = Math.min(1.0, resistancePercent); // Cap at 100% (invulnerability)
                         } else if (wave >= 21) {
                             // Wave 21 is the last regular wave
                             resistancePercent = 0.30; // 30% damage reduction
@@ -243,7 +281,9 @@ public class PlayerListener implements Listener {
                         if (isLegendary) {
                             double legendaryResistanceBonus = plugin.getConfigManager().getBalanceConfig().getDouble("legendary.resistance-bonus", 0.20);
                             resistancePercent += legendaryResistanceBonus;
-                            resistancePercent = Math.min(0.98, resistancePercent); // Cap at 98% max
+                            // Cap at 100% for infinite waves (allows invulnerability), 98% for regular waves
+                            double maxResistance = isInfiniteWave ? 1.0 : 0.98;
+                            resistancePercent = Math.min(maxResistance, resistancePercent);
                         }
                         
                         // Apply resistance to damage

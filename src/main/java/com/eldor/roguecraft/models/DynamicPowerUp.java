@@ -392,15 +392,27 @@ public class DynamicPowerUp {
     
     /**
      * Determine rarity based on luck stat
+     * Legendary is now much rarer - requires very high roll + luck bonus
      */
     private static PowerUp.Rarity determineRarity(double luck) {
-        double roll = RANDOM.nextDouble() * (1.0 + luck * 0.5); // Luck increases chances
+        // Base roll from 0.0 to 1.0
+        double roll = RANDOM.nextDouble();
         
-        if (roll > 0.95) {
+        // Luck adds a small bonus to the roll (max 5% bonus from very high luck)
+        // Formula: luck * 0.005, capped at 0.05 (so luck 10.0+ gives max bonus)
+        double luckBonus = Math.min(0.05, luck * 0.005);
+        double effectiveRoll = Math.min(1.0, roll + luckBonus);
+        
+        // Much rarer thresholds:
+        // Legendary: 0.99+ (1% base chance, up to 6% with max luck bonus)
+        // Epic: 0.85+ (15% base chance, up to 20% with max luck)
+        // Rare: 0.60+ (40% base chance, up to 45% with max luck)
+        // Common: everything else
+        if (effectiveRoll > 0.99) {
             return PowerUp.Rarity.LEGENDARY;
-        } else if (roll > 0.80) {
+        } else if (effectiveRoll > 0.85) {
             return PowerUp.Rarity.EPIC;
-        } else if (roll > 0.55) {
+        } else if (effectiveRoll > 0.60) {
             return PowerUp.Rarity.RARE;
         } else {
             return PowerUp.Rarity.COMMON;

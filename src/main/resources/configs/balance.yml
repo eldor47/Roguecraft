@@ -94,15 +94,9 @@ waves:
   
   # Infinite wave settings (INSANELY HARD)
   infinite:
-    # Mob types to spawn in infinite waves (2-3 types randomly selected each wave)
+    # Mob types to spawn in infinite waves (only Wither Skeletons to prevent mob infighting)
     mob-types:
       - WITHER_SKELETON
-      - ENDERMAN
-      - RAVAGER
-      - BLAZE
-      - VINDICATOR
-      - SKELETON
-      - ZOMBIE
     # Base spawn count for infinite waves (increased for more mobs)
     base-count: 40
     # How much to increase spawn count per infinite wave (more aggressive)

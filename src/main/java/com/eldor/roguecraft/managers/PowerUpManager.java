@@ -144,15 +144,15 @@ public class PowerUpManager {
                 // 22% chance for weapon upgrade
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateWeaponUpgrade(playerLevel, luck);
                 uniqueKey = "weapon_upgrade";
-            } else if (roll < 0.40) {
+            } else if (roll < 0.42) {
                 // 18% chance for weapon mod
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateWeaponMod(playerLevel, luck);
                 uniqueKey = "weapon_mod_" + powerUp.getName();
-            } else if (roll < 0.60) {
+            } else if (roll < 0.62) {
                 // 20% chance for aura
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateAura(playerLevel, luck, excludeVampireAura);
                 uniqueKey = "aura_" + powerUp.getName();
-            } else if (roll < 0.70) {
+            } else if (roll < 0.72) {
                 // 10% chance for synergy
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateSynergy(playerLevel, luck);
                 uniqueKey = "synergy_" + powerUp.getName();

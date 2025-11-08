@@ -136,8 +136,26 @@ public class SynergyManager implements Listener {
         
         PowerUp criticalMass = getSynergyByName(run, "Critical Mass");
         if (criticalMass != null) {
-            double aoePercent = criticalMass.getValue() * 50.0; // 50% per value point
+            // Get player's weapon to check if it's Lightning Strike
+            com.eldor.roguecraft.models.Weapon weapon = null;
+            if (run instanceof com.eldor.roguecraft.models.TeamRun) {
+                weapon = ((com.eldor.roguecraft.models.TeamRun) run).getWeapon();
+            } else if (run instanceof com.eldor.roguecraft.models.Run) {
+                weapon = ((com.eldor.roguecraft.models.Run) run).getWeapon();
+            }
+            
+            // Lightning Strike: Reduced Critical Mass AOE (25% per value point instead of 50%)
+            // Other weapons: Normal Critical Mass AOE (50% per value point)
+            boolean isLightningStrike = weapon != null && weapon.getType() == com.eldor.roguecraft.models.Weapon.WeaponType.LIGHTNING_STRIKE;
+            double aoePercentMultiplier = isLightningStrike ? 25.0 : 50.0; // Reduced for Lightning Strike
+            double aoePercent = criticalMass.getValue() * aoePercentMultiplier;
             double aoeDamage = damage * (aoePercent / 100.0);
+            
+            // Boss-specific: Further reduce Critical Mass AOE damage against bosses
+            boolean isBoss = target.hasMetadata("roguecraft_boss") || target.hasMetadata("roguecraft_elite_boss");
+            if (isBoss) {
+                aoeDamage *= 0.5; // 50% reduction for bosses
+            }
             
             // Explode at target location
             Location loc = target.getLocation();

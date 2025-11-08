@@ -17,6 +17,7 @@ import org.bukkit.entity.ThrownPotion;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
@@ -173,8 +174,28 @@ public class GameListener implements Listener {
             return;
         }
         
-        // Handle XP and experience
-        if (teamRun != null && teamRun.isActive()) {
+        // Check if mob was nuked (no XP for nuked mobs)
+        boolean wasNuked = entity.hasMetadata("roguecraft_nuked");
+        
+        // Check if it's the Wither boss - trigger large radius magnet instead of XP
+        boolean isBoss = entity.hasMetadata("roguecraft_boss") || entity.hasMetadata("roguecraft_elite_boss");
+        if (isBoss && !wasNuked && killer != null) {
+            // Trigger magnet effect with very large radius for all players in the run
+            if (teamRun != null && teamRun.isActive()) {
+                for (Player p : teamRun.getPlayers()) {
+                    if (p != null && p.isOnline()) {
+                        applyMagnetLargeRadius(p, teamRun, null, 50.0); // 50 block radius
+                    }
+                }
+            } else if (run != null && run.isActive()) {
+                applyMagnetLargeRadius(killer, null, run, 50.0); // 50 block radius
+            }
+        }
+        
+        // AUTO XP SYSTEM DISABLED - Players must collect XP tokens to level up
+        /*
+        // Handle XP and experience (skip if nuked)
+        if (!wasNuked && teamRun != null && teamRun.isActive()) {
             // Award experience to team (shared XP with multiplier)
             int baseXp = calculateExperience(type, teamRun.getWave(), teamRun.getStat("difficulty"));
             
@@ -209,7 +230,7 @@ public class GameListener implements Listener {
                     );
                 }
             }
-        } else if (run != null && run.isActive()) {
+        } else if (!wasNuked && run != null && run.isActive()) {
             // Award experience based on entity type with multiplier
             int baseXp = calculateExperience(type, run.getWave(), run.getStat("difficulty"));
             
@@ -241,6 +262,7 @@ public class GameListener implements Listener {
                 run.getWave()
             );
         }
+        */
         
         // Check for rare power-up shrine buff (Treasure Hunter)
         if (killer.hasMetadata("shrine_rare_powerup")) {
@@ -252,11 +274,11 @@ public class GameListener implements Listener {
         
         // Drop custom items (pass run/teamRun for drop_rate stat)
         if (teamRun != null && teamRun.isActive()) {
-            dropCustomItems(entity, isElite, teamRun);
+            dropCustomItems(entity, isElite, isLegendary, teamRun);
         } else if (run != null && run.isActive()) {
-            dropCustomItems(entity, isElite, run);
+            dropCustomItems(entity, isElite, isLegendary, run);
         } else {
-            dropCustomItems(entity, isElite, null);
+            dropCustomItems(entity, isElite, isLegendary, null);
         }
     }
     
@@ -321,7 +343,7 @@ public class GameListener implements Listener {
         }
     }
     
-    private void dropCustomItems(LivingEntity entity, boolean isElite, Object run) {
+    private void dropCustomItems(LivingEntity entity, boolean isElite, boolean isLegendary, Object run) {
         org.bukkit.Location loc = entity.getLocation();
         
         // Get drop_rate stat multiplier
@@ -332,29 +354,33 @@ public class GameListener implements Listener {
             dropRate = ((com.eldor.roguecraft.models.Run) run).getStat("drop_rate");
         }
         
-        // XP Token drop
+        // XP Token drop - ALWAYS drops from every mob (with reduced XP amount)
+        // Elites and Legendaries drop larger XP tokens
         if (plugin.getConfigManager().getMainConfig().getBoolean("drops.xp-token.enabled", true)) {
-            double xpChance = plugin.getConfigManager().getMainConfig().getDouble("drops.xp-token.base-chance", 0.05);
-            if (isElite) {
-                double eliteBonus = plugin.getConfigManager().getMainConfig().getDouble("drops.xp-token.elite-bonus", 0.15);
-                xpChance += eliteBonus;
+            int xpMultiplier = 1;
+            if (isLegendary) {
+                xpMultiplier = 5; // Legendaries drop 5x XP tokens
+            } else if (isElite) {
+                xpMultiplier = 3; // Elites drop 3x XP tokens
             }
-            // Apply drop_rate multiplier
-            xpChance *= dropRate;
-            xpChance = Math.min(1.0, xpChance); // Cap at 100%
             
-            if (RANDOM.nextDouble() < xpChance) {
-                ItemStack xpToken = createXPToken();
-                Item item = loc.getWorld().dropItem(loc, xpToken);
-                item.setVelocity(new Vector(
-                    (RANDOM.nextDouble() - 0.5) * 0.3,
-                    0.2 + RANDOM.nextDouble() * 0.2,
-                    (RANDOM.nextDouble() - 0.5) * 0.3
-                ));
+            ItemStack xpToken = createXPToken(xpMultiplier);
+            Item item = loc.getWorld().dropItem(loc, xpToken);
+            item.setVelocity(new Vector(
+                (RANDOM.nextDouble() - 0.5) * 0.3,
+                0.2 + RANDOM.nextDouble() * 0.2,
+                (RANDOM.nextDouble() - 0.5) * 0.3
+            ));
+            // Store multiplier in custom name for pickup handler
+            if (xpMultiplier > 1) {
+                item.setCustomName("XP_TOKEN_" + xpMultiplier);
+            } else {
                 item.setCustomName("XP_TOKEN");
-                item.setCustomNameVisible(false);
-                // Visual effect on drop
-                loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 5, 0.3, 0.5, 0.3, 0.1);
+            }
+            item.setCustomNameVisible(false);
+            // Minimal visual effect on drop (since it's always dropping)
+            if (RANDOM.nextDouble() < 0.1) { // Only show particles 10% of the time to reduce lag
+                loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 2, 0.2, 0.3, 0.2, 0.05);
             }
         }
         
@@ -385,21 +411,48 @@ public class GameListener implements Listener {
             }
         }
         
-        // Unique Power-Up drops (very rare drops - Movement Speed Boost and Time Freeze)
+        // Unique Power-Up drops (rare drops - Movement Speed Boost, Time Freeze, Nuclear Strike, Magnet, Double XP)
         if (plugin.getConfigManager().getMainConfig().getBoolean("drops.powerup.enabled", true)) {
-            // Base chance from config (default 0.25%) - only increases with drop_rate stat
-            double powerupChance = plugin.getConfigManager().getMainConfig().getDouble("drops.powerup.base-chance", 0.0025);
+            // Base chance from config (2% default, scales with drop_rate stat)
+            double powerupChance = plugin.getConfigManager().getMainConfig().getDouble("drops.powerup.base-chance", 0.02);
             // Apply drop_rate multiplier (no elite bonus, no other scaling)
             powerupChance *= dropRate;
             powerupChance = Math.min(1.0, powerupChance); // Cap at 100%
             
-            if (RANDOM.nextDouble() < powerupChance && run != null) {
-                // Choose between unique power-ups (50/50 chance)
-                boolean isSpeedBoost = RANDOM.nextBoolean();
-                String powerUpType = isSpeedBoost ? "SPEED_BOOST" : "TIME_FREEZE";
+            // Check if run is valid (either Run or TeamRun)
+            boolean isValidRun = run instanceof com.eldor.roguecraft.models.Run || run instanceof com.eldor.roguecraft.models.TeamRun;
+            
+            if (RANDOM.nextDouble() < powerupChance && isValidRun) {
+                // Choose between unique power-ups (Magnet has higher chance: 30%, others 17.5% each)
+                double powerUpRoll = RANDOM.nextDouble();
+                String powerUpType;
+                if (powerUpRoll < 0.30) {
+                    powerUpType = "MAGNET"; // 30% chance for magnet
+                } else if (powerUpRoll < 0.475) {
+                    powerUpType = "SPEED_BOOST"; // 17.5% chance
+                } else if (powerUpRoll < 0.65) {
+                    powerUpType = "TIME_FREEZE"; // 17.5% chance
+                } else if (powerUpRoll < 0.825) {
+                    powerUpType = "NUCLEAR_STRIKE"; // 17.5% chance
+                } else {
+                    powerUpType = "DOUBLE_XP"; // 17.5% chance
+                }
                 
                 ItemStack powerupItem = createUniquePowerUpItem(powerUpType);
-                Item item = loc.getWorld().dropItem(loc, powerupItem);
+                // Prevent stacking by setting amount to 1 and making it unstackable
+                powerupItem.setAmount(1);
+                // Offset drop location slightly to prevent merging with XP tokens
+                Location dropLoc = loc.clone().add(
+                    (RANDOM.nextDouble() - 0.5) * 0.5,
+                    0.2,
+                    (RANDOM.nextDouble() - 0.5) * 0.5
+                );
+                Item item = dropLoc.getWorld().dropItem(dropLoc, powerupItem);
+                // Prevent item from merging with other items
+                item.setPickupDelay(0);
+                // Add unique metadata to prevent merging
+                item.setMetadata("roguecraft_powerup_" + System.currentTimeMillis() + "_" + RANDOM.nextInt(10000), 
+                    new org.bukkit.metadata.FixedMetadataValue(plugin, true));
                 item.setVelocity(new Vector(
                     (RANDOM.nextDouble() - 0.5) * 0.3,
                     0.3 + RANDOM.nextDouble() * 0.3,
@@ -409,28 +462,57 @@ public class GameListener implements Listener {
                 item.setCustomNameVisible(false);
                 
                 // Unique visual and sound effects for power-up drop
-                if (isSpeedBoost) {
+                if (powerUpType.equals("SPEED_BOOST")) {
                     loc.getWorld().spawnParticle(org.bukkit.Particle.CLOUD, loc, 20, 0.5, 0.5, 0.5, 0.3);
                     loc.getWorld().spawnParticle(org.bukkit.Particle.CRIT, loc, 15, 0.5, 0.5, 0.5, 0.2);
                     loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_HORSE_GALLOP, 0.5f, 1.5f);
-                } else {
+                } else if (powerUpType.equals("TIME_FREEZE")) {
                     loc.getWorld().spawnParticle(org.bukkit.Particle.TOTEM_OF_UNDYING, loc, 15, 0.5, 0.5, 0.5, 0.2);
                     loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.3);
                     loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
                     loc.getWorld().playSound(loc, org.bukkit.Sound.ITEM_TOTEM_USE, 0.5f, 1.2f);
+                } else if (powerUpType.equals("NUCLEAR_STRIKE")) {
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.EXPLOSION, loc, 5, 0.5, 0.5, 0.5, 0.1);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.SMOKE, loc, 20, 0.5, 0.5, 0.5, 0.2);
+                    loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 0.5f, 1.0f);
+                } else if (powerUpType.equals("MAGNET")) {
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.3);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 15, 0.5, 0.5, 0.5, 0.2);
+                    loc.getWorld().playSound(loc, org.bukkit.Sound.BLOCK_ENCHANTMENT_TABLE_USE, 0.5f, 1.2f);
+                } else { // DOUBLE_XP
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 25, 0.5, 0.5, 0.5, 0.3);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.2);
+                    loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
                 }
             }
         }
     }
     
-    private ItemStack createXPToken() {
+    private ItemStack createXPToken(int multiplier) {
         ItemStack item = new ItemStack(Material.EXPERIENCE_BOTTLE);
         ItemMeta meta = item.getItemMeta();
-        meta.setDisplayName(ChatColor.YELLOW + "✨ XP Token");
+        
+        // Reduced XP amount (scaled way back since every mob drops one)
+        int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 5);
+        int xpAmount = baseXpAmount * multiplier;
+        
+        // Different display based on multiplier
+        if (multiplier > 1) {
+            if (multiplier >= 5) {
+                meta.setDisplayName(ChatColor.GOLD + "✨✨✨ Large XP Token ✨✨✨");
+            } else {
+                meta.setDisplayName(ChatColor.YELLOW + "✨✨ Medium XP Token ✨✨");
+            }
+        } else {
+            meta.setDisplayName(ChatColor.YELLOW + "✨ XP Token");
+        }
+        
         List<String> lore = new ArrayList<>();
         lore.add(ChatColor.GRAY + "Pick up to gain bonus XP!");
-        int xpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 50);
         lore.add(ChatColor.GREEN + "+" + xpAmount + " XP");
+        if (multiplier > 1) {
+            lore.add(ChatColor.GRAY + "(" + multiplier + "x value)");
+        }
         meta.setLore(lore);
         item.setItemMeta(meta);
         return item;
@@ -476,14 +558,38 @@ public class GameListener implements Listener {
             return; // Don't process if not in a run
         }
         
-        // Check for XP Token
-        if (item.getCustomName() != null && item.getCustomName().equals("XP_TOKEN")) {
+        // Check for XP Token (regular, medium, or large)
+        String customName = item.getCustomName();
+        if (customName != null && customName.startsWith("XP_TOKEN")) {
             event.setCancelled(true);
+            
+            // Get stack size to calculate total XP from stacked tokens
+            ItemStack itemStack = item.getItemStack();
+            int stackSize = itemStack != null ? itemStack.getAmount() : 1;
+            
             item.remove();
             
-            int xpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 50);
+            // Extract multiplier from custom name (XP_TOKEN_3 or XP_TOKEN_5)
+            int tokenMultiplier = 1;
+            if (customName.contains("_")) {
+                try {
+                    tokenMultiplier = Integer.parseInt(customName.split("_")[2]);
+                } catch (Exception e) {
+                    tokenMultiplier = 1;
+                }
+            }
+            
+            int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 5);
+            int baseTokenXp = baseXpAmount * tokenMultiplier; // Token already has multiplier applied
+            int totalBaseXp = baseTokenXp * stackSize; // Multiply by stack size
             
             if (teamRun != null && teamRun.isActive()) {
+                // Scale XP with player level (increased scaling for later levels)
+                int playerLevel = teamRun.getLevel();
+                // Use exponential scaling: base + (level * 2) + (level^2 * 0.1) for better late-game scaling
+                double levelScaling = (playerLevel * 2.0) + (playerLevel * playerLevel * 0.1);
+                int xpAmount = (int) (totalBaseXp + (levelScaling * stackSize));
+                
                 // Apply XP multiplier
                 double multiplier = teamRun.getStat("xp_multiplier");
                 int finalXp = (int) (xpAmount * multiplier);
@@ -501,8 +607,15 @@ public class GameListener implements Listener {
                         );
                     }
                 }
-                player.sendMessage(ChatColor.GREEN + "✨ +" + finalXp + " XP from token!");
+                // Show XP gain as Text Display above player instead of chat
+                showXPTextDisplay(player, finalXp);
             } else if (run != null && run.isActive()) {
+                // Scale XP with player level (increased scaling for later levels)
+                int playerLevel = run.getLevel();
+                // Use exponential scaling: base + (level * 2) + (level^2 * 0.1) for better late-game scaling
+                double levelScaling = (playerLevel * 2.0) + (playerLevel * playerLevel * 0.1);
+                int xpAmount = (int) (totalBaseXp + (levelScaling * stackSize));
+                
                 // Apply XP multiplier
                 double multiplier = run.getStat("xp_multiplier");
                 int finalXp = (int) (xpAmount * multiplier);
@@ -515,7 +628,8 @@ public class GameListener implements Listener {
                     run.getLevel(),
                     run.getWave()
                 );
-                player.sendMessage(ChatColor.GREEN + "✨ +" + finalXp + " XP from token!");
+                // Show XP gain as Text Display above player instead of chat
+                showXPTextDisplay(player, finalXp);
                 // Sound effect for XP token pickup
                 player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.8f, 1.2f);
                 player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, player.getLocation().add(0, 1, 0), 10, 0.3, 0.5, 0.3, 0.1);
@@ -544,19 +658,76 @@ public class GameListener implements Listener {
         // Check for Unique Power-Up Items
         if (item.getCustomName() != null && item.getCustomName().startsWith("POWERUP_ITEM_")) {
             event.setCancelled(true);
+            
+            // Get stack size to apply effect multiple times if stacked
+            ItemStack itemStack = item.getItemStack();
+            int stackSize = itemStack != null ? itemStack.getAmount() : 1;
+            
             item.remove();
             
             String powerUpType = item.getCustomName().replace("POWERUP_ITEM_", "");
             
-            if (powerUpType.equals("SPEED_BOOST")) {
-                // Apply Movement Speed Boost (temporary speed increase)
-                applySpeedBoost(player, teamRun, run);
-            } else if (powerUpType.equals("TIME_FREEZE")) {
-                // Apply Time Freeze (freeze all mobs temporarily)
-                applyTimeFreeze(player, teamRun, run);
+            // Apply the effect for each item in the stack
+            for (int i = 0; i < stackSize; i++) {
+                if (powerUpType.equals("SPEED_BOOST")) {
+                    // Apply Movement Speed Boost (temporary speed increase)
+                    applySpeedBoost(player, teamRun, run);
+                } else if (powerUpType.equals("TIME_FREEZE")) {
+                    // Apply Time Freeze (freeze all mobs temporarily)
+                    applyTimeFreeze(player, teamRun, run);
+                } else if (powerUpType.equals("NUCLEAR_STRIKE")) {
+                    // Apply Nuclear Strike (kill all mobs, no XP)
+                    applyNuclearStrike(player, teamRun, run);
+                } else if (powerUpType.equals("MAGNET")) {
+                    // Apply Magnet (pull items to player)
+                    applyMagnet(player, teamRun, run);
+                } else if (powerUpType.equals("DOUBLE_XP")) {
+                    // Apply Double XP (2x XP for 30 seconds)
+                    applyDoubleXP(player, teamRun, run);
+                }
             }
             
             return;
+        }
+    }
+    
+    /**
+     * Cancel natural TNT explosion damage to mobs (we apply custom damage instead)
+     * and track damage for lifesteal
+     */
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onEntityDamage(EntityDamageEvent event) {
+        // Only handle damage to mobs (not players)
+        if (!(event.getEntity() instanceof LivingEntity) || event.getEntity() instanceof Player) {
+            return;
+        }
+        
+        LivingEntity entity = (LivingEntity) event.getEntity();
+        
+        // Check if this entity was damaged by TNT explosion from our weapon
+        if (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION && 
+            entity.hasMetadata("roguecraft_tnt_damaged")) {
+            
+            // Cancel the natural explosion damage since we apply custom damage
+            event.setCancelled(true);
+            
+            String playerUuidStr = entity.getMetadata("roguecraft_tnt_damaged").get(0).asString();
+            Player tntOwner = Bukkit.getPlayer(java.util.UUID.fromString(playerUuidStr));
+            
+            if (tntOwner != null && tntOwner.isOnline()) {
+                // Check if player is in a run
+                com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(tntOwner);
+                com.eldor.roguecraft.models.Run run = null;
+                
+                if (teamRun == null || !teamRun.isActive()) {
+                    run = plugin.getRunManager().getRun(tntOwner);
+                }
+                
+                if ((teamRun != null && teamRun.isActive()) || (run != null && run.isActive())) {
+                    // The custom damage from the scheduled task will apply lifesteal, so we don't need to do it here
+                    // This handler just cancels the natural explosion damage
+                }
+            }
         }
     }
     
@@ -571,11 +742,26 @@ public class GameListener implements Listener {
             name = "Movement Speed Boost";
             description = "Gain +100% movement speed for 15 seconds";
             color = ChatColor.AQUA;
-        } else { // TIME_FREEZE
+        } else if (powerUpType.equals("TIME_FREEZE")) {
             item = new ItemStack(Material.CLOCK);
             name = "Time Freeze";
             description = "Freeze all enemies for 8 seconds";
             color = ChatColor.LIGHT_PURPLE;
+        } else if (powerUpType.equals("NUCLEAR_STRIKE")) {
+            item = new ItemStack(Material.TNT);
+            name = "Nuclear Strike";
+            description = "Instantly kills all enemies (no XP)";
+            color = ChatColor.RED;
+        } else if (powerUpType.equals("MAGNET")) {
+            item = new ItemStack(Material.IRON_INGOT);
+            name = "Magnet";
+            description = "Pulls all nearby items to you for 20 seconds";
+            color = ChatColor.BLUE;
+        } else { // DOUBLE_XP
+            item = new ItemStack(Material.EXPERIENCE_BOTTLE);
+            name = "Double XP";
+            description = "Gain 2x XP for 30 seconds";
+            color = ChatColor.GREEN;
         }
         
         ItemMeta meta = item.getItemMeta();
@@ -658,6 +844,339 @@ public class GameListener implements Listener {
             player.sendMessage(ChatColor.LIGHT_PURPLE + "⏸ Time Freeze activated! All enemies frozen for 8 seconds!");
             player.playSound(player.getLocation(), org.bukkit.Sound.ITEM_TOTEM_USE, 1.0f, 0.8f);
             player.getWorld().spawnParticle(org.bukkit.Particle.TOTEM_OF_UNDYING, player.getLocation().add(0, 1, 0), 20, 0.5, 0.5, 0.5, 0.2);
+        }
+    }
+    
+    private void applyNuclearStrike(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run) {
+        // Get arena for the run
+        com.eldor.roguecraft.models.Arena arena = plugin.getArenaManager().getDefaultArena();
+        if (arena == null) {
+            player.sendMessage(ChatColor.RED + "No arena found!");
+            return;
+        }
+        
+        // Execute nuke effect
+        Object currentRun = teamRun != null ? teamRun : run;
+        plugin.getGameManager().executeNuke(player, currentRun, arena);
+        
+        // Notify players
+        if (teamRun != null && teamRun.isActive()) {
+            for (Player p : teamRun.getPlayers()) {
+                if (p != null && p.isOnline()) {
+                    p.sendMessage(ChatColor.RED + "§l☢ NUCLEAR STRIKE! ☢");
+                    p.sendMessage(ChatColor.YELLOW + "All enemies eliminated!");
+                }
+            }
+        } else if (run != null && run.isActive()) {
+            player.sendMessage(ChatColor.RED + "§l☢ NUCLEAR STRIKE! ☢");
+            player.sendMessage(ChatColor.YELLOW + "All enemies eliminated!");
+        }
+    }
+    
+    /**
+     * Apply magnet effect with large radius (used for Wither boss reward)
+     */
+    private void applyMagnetLargeRadius(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run, double radius) {
+        // Check if player is in a run
+        if ((teamRun == null || !teamRun.isActive()) && (run == null || !run.isActive())) {
+            return;
+        }
+        
+        // Notify player
+        player.sendMessage(ChatColor.BLUE + "🧲 Boss Defeated! Pulling all items from " + (int)radius + " blocks!");
+        player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_ENCHANTMENT_TABLE_USE, 1.5f, 1.0f);
+        player.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, player.getLocation().add(0, 1, 0), 50, radius * 0.5, 2.0, radius * 0.5, 0.5);
+        
+        // Start magnet effect (pull items every tick for 10 seconds with large radius)
+        final Player finalPlayer = player;
+        final int magnetDuration = 10 * 20; // 10 seconds in ticks
+        final double finalRadius = radius;
+        final int[] ticksElapsed = {0};
+        final org.bukkit.scheduler.BukkitTask[] magnetTaskRef = new org.bukkit.scheduler.BukkitTask[1];
+        
+        magnetTaskRef[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!finalPlayer.isOnline() || finalPlayer.isDead()) {
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            // Check if still in run
+            boolean stillInRun = false;
+            if (teamRun != null && teamRun.isActive()) {
+                stillInRun = teamRun.getPlayers().contains(finalPlayer);
+            } else if (run != null && run.isActive()) {
+                stillInRun = run.getPlayer().equals(finalPlayer);
+            }
+            
+            if (!stillInRun) {
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            ticksElapsed[0] += 1;
+            if (ticksElapsed[0] >= magnetDuration) {
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            // Pull nearby items (XP tokens, hearts, power-ups) with large radius
+            Location playerLoc = finalPlayer.getLocation();
+            
+            for (Entity entity : finalPlayer.getWorld().getNearbyEntities(playerLoc, finalRadius, finalRadius, finalRadius)) {
+                if (entity instanceof Item) {
+                    Item item = (Item) entity;
+                    String customName = item.getCustomName();
+                    
+                    // Only pull our custom items
+                    if (customName != null && (
+                        customName.startsWith("XP_TOKEN") ||
+                        customName.equals("HEART_ITEM") ||
+                        customName.startsWith("POWERUP_ITEM_")
+                    )) {
+                        // Pull item towards player with much stronger pull
+                        Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
+                        double distance = item.getLocation().distance(playerLoc);
+                        // Much faster pull speed for boss reward (increased from 1.0)
+                        double pullSpeed = distance > 20 ? 2.0 : 3.5; // Faster when closer
+                        item.setVelocity(direction.multiply(pullSpeed));
+                        
+                        // Visual effect
+                        if (ticksElapsed[0] % 5 == 0) { // Only show particles every 5 ticks to reduce lag
+                            finalPlayer.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, item.getLocation(), 1, 0.1, 0.1, 0.1, 0.01);
+                        }
+                    }
+                }
+            }
+        }, 0L, 1L); // Run every tick
+        
+        // Cancel task after duration (backup cancellation)
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (magnetTaskRef[0] != null && !magnetTaskRef[0].isCancelled()) {
+                magnetTaskRef[0].cancel();
+            }
+        }, magnetDuration);
+    }
+    
+    private void applyMagnet(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run) {
+        // Check if player is in a run
+        if ((teamRun == null || !teamRun.isActive()) && (run == null || !run.isActive())) {
+            return;
+        }
+        
+        // Notify player
+        player.sendMessage(ChatColor.BLUE + "🧲 Magnet activated! Pulling items for 20 seconds!");
+        player.playSound(player.getLocation(), org.bukkit.Sound.BLOCK_ENCHANTMENT_TABLE_USE, 1.0f, 1.2f);
+        player.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, player.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
+        
+        // Start magnet effect (pull items every tick for 20 seconds)
+        final Player finalPlayer = player;
+        final int magnetDuration = 20 * 20; // 20 seconds in ticks
+        final int[] ticksElapsed = {0};
+        final org.bukkit.scheduler.BukkitTask[] magnetTaskRef = new org.bukkit.scheduler.BukkitTask[1];
+        
+        magnetTaskRef[0] = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!finalPlayer.isOnline() || finalPlayer.isDead()) {
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            // Check if still in run
+            boolean stillInRun = false;
+            if (teamRun != null && teamRun.isActive()) {
+                stillInRun = teamRun.getPlayers().contains(finalPlayer);
+            } else if (run != null && run.isActive()) {
+                stillInRun = run.getPlayer().equals(finalPlayer);
+            }
+            
+            if (!stillInRun) {
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            ticksElapsed[0] += 1;
+            if (ticksElapsed[0] >= magnetDuration) {
+                finalPlayer.sendMessage(ChatColor.GRAY + "Magnet effect expired.");
+                if (magnetTaskRef[0] != null) {
+                    magnetTaskRef[0].cancel();
+                }
+                return;
+            }
+            
+            // Pull nearby items (XP tokens, hearts, power-ups)
+            Location playerLoc = finalPlayer.getLocation();
+            double pullRadius = 30.0; // Increased from 15 to 30 block radius
+            
+            for (Entity entity : finalPlayer.getWorld().getNearbyEntities(playerLoc, pullRadius, pullRadius, pullRadius)) {
+                if (entity instanceof Item) {
+                    Item item = (Item) entity;
+                    String customName = item.getCustomName();
+                    
+                    // Only pull our custom items
+                    if (customName != null && (
+                        customName.startsWith("XP_TOKEN") ||
+                        customName.equals("HEART_ITEM") ||
+                        customName.startsWith("POWERUP_ITEM_")
+                    )) {
+                        // Pull item towards player with much faster speed
+                        Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
+                        double distance = item.getLocation().distance(playerLoc);
+                        // Faster pull speed (increased from 0.5 to 1.5), and even faster when close
+                        double pullSpeed = distance > 10 ? 1.5 : 2.5; // Speed of pull - faster when closer
+                        item.setVelocity(direction.multiply(pullSpeed));
+                        
+                        // Visual effect
+                        finalPlayer.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, item.getLocation(), 2, 0.1, 0.1, 0.1, 0.01);
+                    }
+                }
+            }
+        }, 0L, 1L); // Run every tick
+        
+        // Cancel task after duration (backup cancellation)
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (magnetTaskRef[0] != null && !magnetTaskRef[0].isCancelled()) {
+                magnetTaskRef[0].cancel();
+            }
+        }, magnetDuration);
+    }
+    
+    private void applyDoubleXP(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run) {
+        // Check if player is in a run
+        if ((teamRun == null || !teamRun.isActive()) && (run == null || !run.isActive())) {
+            return;
+        }
+        
+        // Store original multiplier and double it
+        double originalMultiplier;
+        if (teamRun != null && teamRun.isActive()) {
+            originalMultiplier = teamRun.getStat("xp_multiplier");
+            teamRun.setStat("xp_multiplier", originalMultiplier * 2.0);
+            
+            // Notify all team members
+            for (Player p : teamRun.getPlayers()) {
+                if (p != null && p.isOnline()) {
+                    p.sendMessage(ChatColor.GREEN + "✨ Double XP activated! 2x XP for 30 seconds!");
+                    p.playSound(p.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+                    p.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, p.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
+                }
+            }
+        } else if (run != null && run.isActive()) {
+            originalMultiplier = run.getStat("xp_multiplier");
+            run.setStat("xp_multiplier", originalMultiplier * 2.0);
+            
+            player.sendMessage(ChatColor.GREEN + "✨ Double XP activated! 2x XP for 30 seconds!");
+            player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+            player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, player.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
+        } else {
+            return;
+        }
+        
+        // Restore original multiplier after 30 seconds
+        final double finalOriginalMultiplier = originalMultiplier;
+        final com.eldor.roguecraft.models.TeamRun finalTeamRun = teamRun;
+        final Run finalRun = run;
+        
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (finalTeamRun != null && finalTeamRun.isActive()) {
+                // Restore original multiplier
+                finalTeamRun.setStat("xp_multiplier", finalOriginalMultiplier);
+                
+                // Notify team members
+                for (Player p : finalTeamRun.getPlayers()) {
+                    if (p != null && p.isOnline()) {
+                        p.sendMessage(ChatColor.GRAY + "Double XP effect expired.");
+                    }
+                }
+            } else if (finalRun != null && finalRun.isActive()) {
+                // Restore original multiplier
+                finalRun.setStat("xp_multiplier", finalOriginalMultiplier);
+                
+                Player finalPlayer = finalRun.getPlayer();
+                if (finalPlayer != null && finalPlayer.isOnline()) {
+                    finalPlayer.sendMessage(ChatColor.GRAY + "Double XP effect expired.");
+                }
+            }
+        }, 30 * 20L); // 30 seconds
+    }
+    
+    /**
+     * Show XP gain as floating text above the player using ArmorStand
+     */
+    private void showXPTextDisplay(Player player, int xpAmount) {
+        // Lower spawn height - just above player's head
+        Location loc = player.getLocation().add(0, 0.3, 0);
+        
+        try {
+            // Spawn invisible ArmorStand with custom name
+            // Use spawn method that allows setting properties before entity becomes visible
+            org.bukkit.entity.ArmorStand armorStand = loc.getWorld().spawn(loc, org.bukkit.entity.ArmorStand.class, (stand) -> {
+                stand.setVisible(false);
+                stand.setGravity(false);
+                stand.setMarker(true); // Makes it not interactable and invisible
+                stand.setSmall(true);
+                stand.setInvulnerable(true);
+                stand.setCollidable(false);
+                // Make text more visible with bold and bright green
+                stand.setCustomName(ChatColor.GREEN + "" + ChatColor.BOLD + "✨ +" + xpAmount + " XP");
+                stand.setCustomNameVisible(true);
+                // Add glowing effect to make it more visible
+                stand.setGlowing(true);
+                // Add metadata to prevent mob naming system from interfering
+                stand.setMetadata("roguecraft_xp_display", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            });
+            
+            // Add particles around the text for extra visibility
+            player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 5, 0.3, 0.3, 0.3, 0.1);
+            
+            // Make it move upward and fade out
+            final org.bukkit.entity.ArmorStand finalStand = armorStand;
+            org.bukkit.scheduler.BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                if (!finalStand.isValid()) {
+                    return;
+                }
+                
+                Location currentLoc = finalStand.getLocation();
+                finalStand.teleport(currentLoc.add(0, 0.05, 0)); // Move up slowly
+                
+                // Fade out over time by making name less visible
+                int age = finalStand.getTicksLived();
+                if (age > 20) { // Start fading after 1 second
+                    int fadeTime = 40; // 2 seconds to fade
+                    int fadeProgress = Math.min(age - 20, fadeTime);
+                    double opacity = 1.0 - ((double) fadeProgress / fadeTime);
+                    
+                    // Update name with opacity (using color codes) - keep bold for visibility
+                    if (opacity > 0) {
+                        String colorCode = opacity > 0.75 ? ChatColor.GREEN.toString() + ChatColor.BOLD.toString() : 
+                                         opacity > 0.5 ? ChatColor.YELLOW.toString() + ChatColor.BOLD.toString() : 
+                                         ChatColor.GRAY.toString() + ChatColor.BOLD.toString();
+                        finalStand.setCustomName(colorCode + "✨ +" + xpAmount + " XP");
+                    }
+                }
+            }, 0L, 1L);
+            
+            // Remove after 3 seconds
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (finalStand.isValid()) {
+                    finalStand.remove();
+                }
+                if (task != null && !task.isCancelled()) {
+                    task.cancel();
+                }
+            }, 60L); // 3 seconds
+            
+        } catch (Exception e) {
+            // Fallback to chat message if ArmorStand is not available
+            player.sendMessage(ChatColor.GREEN + "✨ +" + xpAmount + " XP from token!");
         }
     }
     

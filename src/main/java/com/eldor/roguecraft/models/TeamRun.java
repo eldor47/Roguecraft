@@ -18,6 +18,7 @@ public class TeamRun {
     private int rerollsRemaining;
     private boolean isActive;
     private final Set<UUID> playersInGUI;
+    private final Map<UUID, Long> guiOpenTimestamps;
     private Weapon weapon; // Team's shared weapon
 
     public TeamRun(Player initialPlayer) {
@@ -36,6 +37,7 @@ public class TeamRun {
         this.rerollsRemaining = 2;
         this.isActive = true;
         this.playersInGUI = new HashSet<>();
+        this.guiOpenTimestamps = new HashMap<>();
         
         // Initialize base stats
         stats.put("health", 20.0);
@@ -176,8 +178,10 @@ public class TeamRun {
     public void setPlayerInGUI(UUID playerId, boolean inGUI) {
         if (inGUI) {
             playersInGUI.add(playerId);
+            guiOpenTimestamps.put(playerId, System.currentTimeMillis());
         } else {
             playersInGUI.remove(playerId);
+            guiOpenTimestamps.remove(playerId);
         }
     }
 
@@ -187,6 +191,10 @@ public class TeamRun {
 
     public Set<UUID> getPlayersInGUI() {
         return new HashSet<>(playersInGUI);
+    }
+    
+    public long getGuiOpenTimestamp(UUID playerId) {
+        return guiOpenTimestamps.getOrDefault(playerId, 0L);
     }
     
     public Weapon getWeapon() {

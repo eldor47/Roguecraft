@@ -22,12 +22,14 @@ public class WeaponManager {
     private final Map<UUID, BukkitTask> weaponTasks; // Player UUID -> Attack task
     private final Map<UUID, Double> lifestealHealingTracker; // Player UUID -> Healing done in last second
     private final Map<UUID, Long> lifestealLastReset; // Player UUID -> Last reset time
+    private final Map<UUID, Long> lifestealLastHeal; // Player UUID -> Last heal time (for minimum interval)
     
     public WeaponManager(RoguecraftPlugin plugin) {
         this.plugin = plugin;
         this.weaponTasks = new HashMap<>();
         this.lifestealHealingTracker = new HashMap<>();
         this.lifestealLastReset = new HashMap<>();
+        this.lifestealLastHeal = new HashMap<>();
     }
     
     public void startAutoAttack(Player player, Weapon weapon) {
@@ -80,6 +82,7 @@ public class WeaponManager {
         // Clean up lifesteal trackers
         lifestealHealingTracker.remove(playerId);
         lifestealLastReset.remove(playerId);
+        lifestealLastHeal.remove(playerId);
     }
     
     public void stopAllAutoAttacks() {
@@ -92,6 +95,7 @@ public class WeaponManager {
         // Clean up all lifesteal trackers
         lifestealHealingTracker.clear();
         lifestealLastReset.clear();
+        lifestealLastHeal.clear();
     }
     
     private LivingEntity findNearestEnemy(Player player, double range) {
@@ -177,7 +181,25 @@ public class WeaponManager {
         // Check for crit
         boolean isCrit = Math.random() < critChance;
         if (isCrit) {
-            finalDamage *= critDamage;
+            // Tiered crit damage reduction based on mob type:
+            // - Regular mobs: Full crit damage
+            // - Elite mobs: 25% crit damage reduction (75% of crit damage)
+            // - Legendary mobs: 50% crit damage reduction (50% of crit damage)
+            // - Bosses: 50% crit damage reduction (50% of crit damage)
+            boolean isBoss = target != null && (target.hasMetadata("roguecraft_boss") || target.hasMetadata("roguecraft_elite_boss"));
+            boolean isLegendary = target != null && target.hasMetadata("is_legendary");
+            boolean isElite = target != null && (target.hasMetadata("roguecraft_elite") || target.hasMetadata("is_elite"));
+            
+            double effectiveCritDamage;
+            if (isBoss || isLegendary) {
+                effectiveCritDamage = critDamage * 0.5; // 50% crit damage reduction for bosses and legendaries
+            } else if (isElite) {
+                effectiveCritDamage = critDamage * 0.75; // 25% crit damage reduction for elites (less than legendary)
+            } else {
+                effectiveCritDamage = critDamage; // Full crit damage for regular mobs
+            }
+            
+            finalDamage *= effectiveCritDamage;
             // Visual feedback for crit
             if (target != null) {
                 player.getWorld().spawnParticle(Particle.CRIT, target.getEyeLocation(), 20, 0.5, 0.5, 0.5, 0.1);
@@ -187,6 +209,17 @@ public class WeaponManager {
             // Trigger Critical Mass synergy
             if (synergyRun != null && target != null) {
                 plugin.getSynergyManager().onCriticalHit(player, target, finalDamage);
+            }
+        }
+        
+        // Boss damage cap: Maximum 10% of boss's max health per hit
+        // This prevents one-shotting bosses regardless of damage scaling
+        if (target != null) {
+            boolean isBoss = target.hasMetadata("roguecraft_boss") || target.hasMetadata("roguecraft_elite_boss");
+            if (isBoss) {
+                double maxHealth = target.getMaxHealth();
+                double maxDamagePerHit = maxHealth * 0.10; // 10% of max health
+                finalDamage = Math.min(finalDamage, maxDamagePerHit);
             }
         }
         
@@ -240,11 +273,13 @@ public class WeaponManager {
             }
         }
         
-        // Apply lifesteal with healing rate cap (max 2 hearts = 4 HP per second)
+        // Apply lifesteal with strict healing rate cap (max 1 heart = 2 HP per second)
+        // Also enforce minimum time between heals to prevent rapid stacking
         if (hasVampireAura && lifestealPercent > 0) {
             UUID playerId = player.getUniqueId();
             long currentTime = System.currentTimeMillis();
             long lastReset = lifestealLastReset.getOrDefault(playerId, 0L);
+            long lastHeal = lifestealLastHeal.getOrDefault(playerId, 0L);
             
             // Reset tracker every second
             if (currentTime - lastReset >= 1000) {
@@ -252,7 +287,13 @@ public class WeaponManager {
                 lifestealLastReset.put(playerId, currentTime);
             }
             
-            double maxHealingPerSecond = 4.0; // Cap at 2 hearts (4 HP) per second - fixed value to prevent invincibility
+            // Enforce minimum 200ms (5 heals per second max) between individual heal applications
+            // This prevents rapid stacking from multiple AOE hits
+            if (currentTime - lastHeal < 200) {
+                return; // Too soon since last heal, skip this application
+            }
+            
+            double maxHealingPerSecond = 2.0; // Cap at 1 heart (2 HP) per second - reduced to prevent invincibility
             double currentHealingThisSecond = lifestealHealingTracker.getOrDefault(playerId, 0.0);
             
             double healAmount = damageDealt * (lifestealPercent / 100.0);
@@ -265,8 +306,9 @@ public class WeaponManager {
                 double newHealth = Math.min(maxHealth, currentHealth + actualHealAmount);
                 player.setHealth(newHealth);
                 
-                // Update tracker
+                // Update trackers
                 lifestealHealingTracker.put(playerId, currentHealingThisSecond + actualHealAmount);
+                lifestealLastHeal.put(playerId, currentTime);
                 
                 // Visual feedback
                 player.getWorld().spawnParticle(Particle.HEART, player.getEyeLocation(), 3, 0.3, 0.5, 0.3, 0);
@@ -537,7 +579,8 @@ public class WeaponManager {
         boolean isChainLightning = hasWeaponMod(player, "Chain Lightning");
         
         // Cap the effective range - use weapon range but don't let it exceed reasonable bounds
-        double effectiveRange = Math.min(weapon.getRange(), 40.0); // Cap at 40 blocks max
+        // Lightning Strike: Reduced range cap to prevent excessive range
+        double effectiveRange = Math.min(weapon.getRange(), 25.0); // Cap at 25 blocks max (reduced from 40)
         
         // Visual lightning effect
         player.getWorld().spawnParticle(Particle.ELECTRIC_SPARK, targetLoc.clone().add(0, 1, 0), 50, 0.5, 2, 0.5, 0.1);
@@ -627,34 +670,35 @@ public class WeaponManager {
         
         TNTPrimed tnt = player.getWorld().spawn(targetLoc.clone().add(0, 1, 0), TNTPrimed.class);
         tnt.setFuseTicks(30); // 1.5 seconds fuse
-        tnt.setYield((float) weapon.getAreaOfEffect());
+        tnt.setYield((float) weapon.getAreaOfEffect()); // Restore yield for explosion effects
         tnt.setIsIncendiary(false);
         
         // Tag TNT with player UUID for XP attribution
         tnt.setMetadata("roguecraft_tnt_owner", new org.bukkit.metadata.FixedMetadataValue(plugin, player.getUniqueId().toString()));
         
-        // Custom damage since TNT damage is weird
+        // Apply custom damage when TNT explodes (scheduled to run right before explosion)
+        // We run this at 29 ticks to apply damage just before the natural explosion
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (tnt.isValid()) {
+            if (tnt.isValid() && !tnt.isDead()) {
                 Location explodeLoc = tnt.getLocation();
                 
                 // Store actual explosion location for XP attribution
                 tnt.setMetadata("roguecraft_tnt_explosion_loc", new org.bukkit.metadata.FixedMetadataValue(plugin, explodeLoc.clone()));
-                tnt.getWorld().spawnParticle(Particle.EXPLOSION, explodeLoc, 5, 1, 1, 1, 0);
-                tnt.getWorld().playSound(explodeLoc, Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.0f);
                 
                 double totalDamageDealt = 0.0;
                 for (Entity entity : explodeLoc.getWorld().getNearbyEntities(explodeLoc, weapon.getAreaOfEffect(), weapon.getAreaOfEffect(), weapon.getAreaOfEffect())) {
                     if (entity instanceof LivingEntity && entity != player) { // Exclude the player who spawned TNT
                         double distance = entity.getLocation().distance(explodeLoc);
-                        double distanceMultiplier = 1.0 - (distance / weapon.getAreaOfEffect());
+                        double distanceMultiplier = Math.max(0.1, 1.0 - (distance / weapon.getAreaOfEffect()));
                         double baseDamage = weapon.getDamage() * distanceMultiplier;
-                        double finalDamage = calculateFinalDamage(player, baseDamage);
+                        double finalDamage = calculateFinalDamage(player, baseDamage, (LivingEntity) entity);
                         LivingEntity living = (LivingEntity) entity;
                         
                         // Tag entity with TNT owner for XP attribution if killed by explosion
                         living.setMetadata("roguecraft_tnt_damaged", new org.bukkit.metadata.FixedMetadataValue(plugin, player.getUniqueId().toString()));
+                        living.setMetadata("roguecraft_tnt_damage_time", new org.bukkit.metadata.FixedMetadataValue(plugin, System.currentTimeMillis()));
                         
+                        // Apply damage
                         living.damage(finalDamage, player);
                         applyWeaponModEffects(player, living);
                         totalDamageDealt += finalDamage;
@@ -663,9 +707,8 @@ public class WeaponManager {
                 if (totalDamageDealt > 0) {
                     applyLifesteal(player, totalDamageDealt);
                 }
-                tnt.remove();
             }
-        }, 30L);
+        }, 29L); // Run 1 tick before explosion to apply damage first
         
         player.playSound(player.getLocation(), Sound.ENTITY_TNT_PRIMED, 0.5f, 1.0f);
     }

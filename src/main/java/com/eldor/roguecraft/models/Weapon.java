@@ -40,6 +40,10 @@ public class Weapon {
             // Potion Thrower: Reduced scaling (5% per level instead of 10%), capped at 1.5x base
             double maxAttackSpeed = this.type.getBaseAttackSpeed() * 1.5;
             this.attackSpeed = Math.min(this.attackSpeed * 1.05, maxAttackSpeed);
+        } else if (this.type == WeaponType.LIGHTNING_STRIKE) {
+            // Lightning Strike: Reduced attack speed scaling (5% per level), capped at 1.5x base to prevent excessive fire rate
+            double maxAttackSpeed = this.type.getBaseAttackSpeed() * 1.5;
+            this.attackSpeed = Math.min(this.attackSpeed * 1.05, maxAttackSpeed);
         } else if (this.type == WeaponType.TNT_SPAWNER || this.type == WeaponType.FIREBALL) {
             // TNT and Fireball: Increased scaling (12% per level) to buff them
             this.attackSpeed *= 1.12;
@@ -76,13 +80,16 @@ public class Weapon {
             this.areaOfEffect = Math.min(this.areaOfEffect * 1.05, maxAOE);
         }
         
-        // Damage scaling - buff TNT and Fireball damage more
+        // Damage scaling - buff TNT and Fireball damage more, nerf Lightning Strike
         if (this.type == WeaponType.TNT_SPAWNER || this.type == WeaponType.FIREBALL) {
             // TNT and Fireball: Increased damage scaling (18% per level instead of 15%)
             this.damage *= 1.18;
         } else if (this.type == WeaponType.POTION_THROWER) {
             // Potion Thrower: Reduced damage scaling (12% per level instead of 15%)
             this.damage *= 1.12;
+        } else if (this.type == WeaponType.LIGHTNING_STRIKE) {
+            // Lightning Strike: Further reduced damage scaling (10% per level) to prevent one-shotting bosses
+            this.damage *= 1.10;
         } else {
             // Other weapons: 15% damage increase per level
             this.damage *= 1.15;
@@ -168,7 +175,7 @@ public class Weapon {
             "Summons lightning bolts on enemies",
             Material.END_ROD,
             15.0, // base damage
-            20.0, // base range (reduced from 30)
+            15.0, // base range (reduced from 20.0 to prevent excessive range)
             0.5,  // base attack speed (0.5 per second)
             1,    // base projectile count
             3.0   // base AOE

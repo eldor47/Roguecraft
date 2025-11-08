@@ -796,15 +796,16 @@ After reaching the maximum wave (default: 20), **Infinite Mode** activates:
 ## Version History
 
 ### Latest Updates (Today)
-- **Legendary Mob Tier** - New rare mob tier (0.4x bigger than elite, 2.1x total size) with golden glow effect using scoreboard teams, increased resistance, damage, and XP rewards
-- **Armor System Overhaul** - Renamed "defense" to "armor" and made it visible in HUD using Minecraft's GENERIC_ARMOR attribute (shows as armor icons like hearts)
-- **Power-Up GUI Stats** - Stats panel now displays lifesteal percentage and active auras list
-- **Drop Rate Stat Nerf** - Reduced drop_rate stat values from 0.1 + level*0.05 to 0.02 + level*0.005 to prevent excessive values
-- **Power-Up Drop Rates** - Scaled back drop rates: XP tokens 5% base (most common), hearts 0.5% base (rare), power-ups 0.25% base (very rare, reduced from 1%)
-- **Healing Caps** - Lifesteal and regeneration both capped at 2 hearts (4 HP) per second (fixed value, not percentage-based) to prevent invincibility
-- **Capped Stat Exclusion** - Regeneration and Vampire Aura power-ups won't appear in selections if you're already at the healing cap (4 HP/second)
-- **Elemental Fusion Nerf** - Reduced scaling from 1.3x max to 1.15x max, and from 0.05x per value to 0.02x per value
-- **Weapon Balance** - Potion Thrower upgrades scaled back (reduced attack speed, AOE, and damage scaling), TNT and Fireball buffed (increased attack speed, AOE, and damage scaling)
+- **TNT Lifesteal Fix** - Fixed lifesteal not working with TNT weapon by tracking explosion damage and applying lifesteal correctly
+- **Weapon Upgrade Preview** - GUI now shows predicted stat changes (damage, range, attack speed, projectiles, AOE) when hovering over weapon upgrade power-ups
+- **Power-Up Drop Rates** - Increased from 0.25% to 2% base chance, with magnet having 30% chance when a power-up drops
+- **Magnet Improvements** - Increased range from 15 to 30 blocks, faster pull speed (1.5x base, 2.5x when close), and improved boss magnet (2.0-3.5x speed)
+- **XP Token Scaling** - Improved exponential scaling for later levels: `(level * 2) + (level² * 0.1)` for much better late-game XP rewards
+- **Power-Up Item Fixes** - Fixed power-up items merging with XP tokens by offsetting drop location and adding unique metadata
+- **Config Cleanup** - Cleaned up config.yml, removed outdated XP token drop chance settings, updated heart heal amount to 10.0 HP
+- **Run Statistics** - Added comprehensive run statistics logging in chat when a run ends (time, wave, level, stats, weapon stats)
+- **Team Run Improvements** - Fixed weapon auto-attacks continuing when one player has GUI open, now pauses all team weapons when any player opens GUI
+- **GUI Timeout** - Added 15-second timeout for power-up GUI to prevent game freezing if player doesn't select
 
 ### Previous Updates
 - **Wave Display on Boss Bar** - XP bar now shows current wave number: "Wave X | Level Y | XP: Z / W"

@@ -42,8 +42,13 @@ public class XPBar {
             activeBars.put(player.getUniqueId(), bar);
         }
         
-        // Update bar
-        double progress = Math.min(1.0, (double) currentXP / requiredXP);
+        // Update bar - prevent division by zero
+        double progress = 0.0;
+        if (requiredXP > 0) {
+            progress = Math.min(1.0, Math.max(0.0, (double) currentXP / requiredXP));
+        } else {
+            progress = 1.0; // If no XP required, show full bar
+        }
         bar.setProgress(progress);
         String title = wave > 0 ?
             "§bWave §f" + wave + " §7| §6Level " + level + " §7| §eXP: §f" + currentXP + " §7/ §f" + requiredXP :

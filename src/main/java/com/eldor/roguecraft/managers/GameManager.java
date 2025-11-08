@@ -17,6 +17,7 @@ import org.bukkit.scheduler.BukkitTask;
 import java.util.*;
 
 public class GameManager {
+    private static final long TEAM_POWERUP_TIMEOUT_MS = 15000L;
     private final RoguecraftPlugin plugin;
     private final Map<UUID, BukkitTask> runTasks;
     private final Map<UUID, BukkitTask> spawnTasks;
@@ -417,12 +418,30 @@ public class GameManager {
             
             // Get max wave from config
             int maxWave = plugin.getConfigManager().getBalanceConfig().getInt("waves.max-wave", 20);
+
+            // Handle players lingering in the power-up GUI (team runs)
+            if (teamRun.hasAnyPlayerInGUI()) {
+                long now = System.currentTimeMillis();
+                for (UUID guiPlayerId : new HashSet<>(teamRun.getPlayersInGUI())) {
+                    long openedAt = teamRun.getGuiOpenTimestamp(guiPlayerId);
+                    if (openedAt > 0 && now - openedAt >= TEAM_POWERUP_TIMEOUT_MS) {
+                        Player guiPlayer = Bukkit.getPlayer(guiPlayerId);
+                        if (guiPlayer != null && guiPlayer.isOnline()) {
+                            guiPlayer.sendMessage(ChatColor.YELLOW + "Power-up selection timed out, closing menu.");
+                            guiPlayer.closeInventory();
+                        } else {
+                            teamRun.setPlayerInGUI(guiPlayerId, false);
+                        }
+                    }
+                }
+                if (teamRun.hasAnyPlayerInGUI()) {
+                    return; // Still waiting on selections this tick
+                }
+            }
+
             boolean isInfiniteMode = maxWave > 0 && teamRun.getWave() > maxWave;
             
-            // Don't advance waves if any player is in GUI (pause wave progression)
-            if (teamRun.hasAnyPlayerInGUI()) {
-                // Skip wave progression while GUI is open
-            } else if (!isInfiniteMode) {
+            if (!isInfiniteMode) {
                 // Wave progression: Advance wave every 30 seconds
                 int expectedWave = (int) (elapsedSeconds / 30) + 1;
                 if (expectedWave > teamRun.getWave() && expectedWave <= maxWave) {
@@ -453,11 +472,32 @@ public class GameManager {
                         }
                     }
                 }
-            } else if (!teamRun.hasAnyPlayerInGUI()) {
-                // Infinite mode: Advance wave every 30 seconds (no max limit)
-                // Calculate expected wave based on elapsed time (same logic as regular waves)
-                // Note: Wave progression is paused when any player is in GUI
-                int expectedWave = (int) (elapsedSeconds / 30) + 1;
+            } else {
+                // Infinite mode: Progressively faster wave progression
+                // Wave interval decreases as infinite waves progress
+                // Start at 10 seconds for wave 21, decrease by 0.5 seconds per infinite wave
+                // Minimum interval: 1 second (caps at wave 19+)
+                int infiniteWaveNumber = teamRun.getWave() - maxWave;
+                double waveInterval = Math.max(1.0, 10.0 - (infiniteWaveNumber * 0.5)); // Decrease by 0.5s per wave, min 1s
+                
+                // Calculate time since infinite mode started
+                // Find when infinite mode began (when wave exceeded maxWave)
+                long infiniteModeStartTime = teamRun.getElapsedTime() - ((elapsedSeconds - (maxWave * 30)) * 1000);
+                long infiniteModeElapsedSeconds = (teamRun.getElapsedTime() - infiniteModeStartTime) / 1000;
+                
+                // Calculate expected wave based on progressive timing
+                int expectedWave = maxWave + 1;
+                double accumulatedTime = 0.0;
+                for (int w = 1; w <= 100; w++) { // Check up to 100 infinite waves
+                    double intervalForWave = Math.max(1.0, 10.0 - ((w - 1) * 0.5));
+                    accumulatedTime += intervalForWave;
+                    if (accumulatedTime <= infiniteModeElapsedSeconds) {
+                        expectedWave = maxWave + w;
+                    } else {
+                        break;
+                    }
+                }
+                
                 if (expectedWave > teamRun.getWave()) {
                     int previousWave = teamRun.getWave();
                     // Set wave directly to expected wave (allows catching up if delayed)
@@ -467,7 +507,7 @@ public class GameManager {
                         // Notify if it's a milestone wave, or if we skipped multiple waves
                         for (Player player : teamRun.getPlayers()) {
                             if (player != null && player.isOnline()) {
-                                player.sendMessage("§c§l∞ Infinite Wave " + expectedWave + " §r§7(Getting harder...)");
+                                player.sendMessage("§c§l∞ Infinite Wave " + expectedWave + " §r§7(Getting harder and faster...)");
                             }
                         }
                     }
@@ -774,6 +814,16 @@ public class GameManager {
                             mob instanceof org.bukkit.entity.WitherSkeleton ||
                             mob instanceof org.bukkit.entity.Phantom) {
                             // Tag as roguecraft mob so we can prevent sunlight damage
+                            mob.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                        }
+                        
+                        // Make creepers explode faster (reduced fuse time)
+                        if (mob instanceof org.bukkit.entity.Creeper) {
+                            org.bukkit.entity.Creeper creeper = (org.bukkit.entity.Creeper) mob;
+                            // Set max fuse ticks to 20 (1 second) instead of default 30 (1.5 seconds)
+                            // This makes creepers explode faster and more dangerous
+                            creeper.setMaxFuseTicks(10);
+                            // Tag as roguecraft mob for tracking
                             mob.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
                         }
                         
@@ -1498,6 +1548,8 @@ public class GameManager {
      */
     private void updateMobNameWithHealth(LivingEntity mob) {
         if (mob.isDead() || !mob.isValid()) return;
+        // Skip XP display ArmorStands
+        if (mob.hasMetadata("roguecraft_xp_display")) return;
         
         String originalName = mob.getType().name().replace("_", " ");
         if (mob.hasMetadata("original_name")) {
@@ -1583,7 +1635,10 @@ public class GameManager {
                 for (org.bukkit.entity.Entity entity : player.getNearbyEntities(30, 30, 30)) {
                     if (entity instanceof LivingEntity && !(entity instanceof Player)) {
                         LivingEntity mob = (LivingEntity) entity;
-                        updateMobNameWithHealth(mob);
+                        // Skip XP display ArmorStands
+                        if (!mob.hasMetadata("roguecraft_xp_display")) {
+                            updateMobNameWithHealth(mob);
+                        }
                     }
                 }
             }
@@ -1598,8 +1653,22 @@ public class GameManager {
             if (speedInstance != null) {
                 double baseSpeed = speedInstance.getBaseValue();
                 
-                // Increase speed by 0.5% per wave, capped at +50% (much slower scaling)
-                double waveSpeedMultiplier = 1.0 + Math.min(0.5, wave * 0.005);
+                // Get max wave from config
+                int maxWave = plugin.getConfigManager().getBalanceConfig().getInt("waves.max-wave", 20);
+                boolean isInfiniteWave = wave > maxWave;
+                
+                double waveSpeedMultiplier;
+                if (isInfiniteWave) {
+                    // Infinite waves: Horrific speed scaling
+                    // Start at +50% for wave 21, then add 5% per infinite wave (uncapped)
+                    // Wave 30 = +95%, Wave 40 = +145%, Wave 50 = +195%, etc.
+                    int infiniteWaveNumber = wave - maxWave;
+                    double infiniteSpeedBonus = 0.50 + (infiniteWaveNumber * 0.05); // 5% per infinite wave
+                    waveSpeedMultiplier = 1.0 + infiniteSpeedBonus; // No cap - let it scale horrifically
+                } else {
+                    // Regular waves: Increase speed by 0.5% per wave, capped at +50%
+                    waveSpeedMultiplier = 1.0 + Math.min(0.5, wave * 0.005);
+                }
                 
                 // Additional scaling from difficulty (time-based) - reduced
                 double difficultySpeedBonus = Math.min(0.25, (difficultyMultiplier - 1.0) * 0.25);
@@ -1771,11 +1840,7 @@ public class GameManager {
             // Notify all players
             for (Player player : teamRun.getPlayers()) {
                 if (player != null && player.isOnline()) {
-                    long elapsed = teamRun.getElapsedTime() / 1000;
-                    player.sendMessage("§cRun ended!");
-                    player.sendMessage("§eSurvived: §f" + elapsed + " seconds");
-                    player.sendMessage("§eWave reached: §f" + teamRun.getWave());
-                    player.sendMessage("§eLevel reached: §f" + teamRun.getLevel());
+                    logRunStats(player, teamRun);
                 }
             }
 
@@ -1850,11 +1915,7 @@ public class GameManager {
             
             Player player = Bukkit.getPlayer(playerId);
             if (player != null) {
-                long elapsed = run.getElapsedTime() / 1000;
-                player.sendMessage("§cRun ended!");
-                player.sendMessage("§eSurvived: §f" + elapsed + " seconds");
-                player.sendMessage("§eWave reached: §f" + run.getWave());
-                player.sendMessage("§eLevel reached: §f" + run.getLevel());
+                logRunStats(player, run);
             }
             
             plugin.getRunManager().endRun(playerId);
@@ -2046,6 +2107,75 @@ public class GameManager {
         originalBorders.clear();
     }
     
+    /**
+     * Execute Nuclear Strike - kills all mobs in arena without XP, with explosion effects
+     */
+    public void executeNuke(Player player, Object run, Arena arena) {
+        if (arena == null || arena.getCenter() == null) {
+            return;
+        }
+        
+        Location center = arena.getCenter();
+        double radius = arena.getRadius();
+        org.bukkit.World world = center.getWorld();
+        
+        if (world == null) {
+            return;
+        }
+        
+        // Find all mobs in arena (exclude Wither boss)
+        java.util.List<LivingEntity> mobsToKill = new java.util.ArrayList<>();
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(center, radius, radius, radius)) {
+            if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                LivingEntity mob = (LivingEntity) entity;
+                // Skip Wither boss (has roguecraft_boss or roguecraft_elite_boss metadata)
+                if (mob.hasMetadata("roguecraft_boss") || mob.hasMetadata("roguecraft_elite_boss")) {
+                    continue; // Don't kill the boss
+                }
+                if (!mob.isDead()) {
+                    mobsToKill.add(mob);
+                }
+            }
+        }
+        
+        if (mobsToKill.isEmpty()) {
+            return; // No mobs to kill
+        }
+        
+        // Mark all mobs as nuked (prevents XP gain)
+        for (LivingEntity mob : mobsToKill) {
+            mob.setMetadata("roguecraft_nuked", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        }
+        
+        // Create explosion particles at each mob location
+        for (LivingEntity mob : mobsToKill) {
+            Location mobLoc = mob.getLocation();
+            
+            // Spawn explosion particles
+            world.spawnParticle(org.bukkit.Particle.EXPLOSION, mobLoc, 3, 0.5, 0.5, 0.5, 0.1);
+            world.spawnParticle(org.bukkit.Particle.EXPLOSION, mobLoc, 10, 1.0, 1.0, 1.0, 0.05);
+            world.spawnParticle(org.bukkit.Particle.SMOKE, mobLoc, 15, 1.0, 1.0, 1.0, 0.1);
+            
+            // Play explosion sound
+            world.playSound(mobLoc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 0.8f, 0.8f);
+        }
+        
+        // Kill all mobs (slight delay for visual effect)
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            for (LivingEntity mob : mobsToKill) {
+                if (mob != null && !mob.isDead() && mob.isValid()) {
+                    mob.setHealth(0); // Kill the mob
+                }
+            }
+        }, 5L); // 0.25 second delay for visual feedback
+        
+        // Additional large explosion effect at arena center
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            world.spawnParticle(org.bukkit.Particle.EXPLOSION_EMITTER, center, 1, 0, 0, 0, 0);
+            world.playSound(center, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.5f);
+        }, 10L); // 0.5 second delay
+    }
+    
     private void resetPlayerAttributes(Player player) {
         // Reset health to default 20
         org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
@@ -2070,5 +2200,145 @@ public class GameManager {
         if (armorInstance != null) {
             armorInstance.setBaseValue(0.0);
         }
+    }
+    
+    /**
+     * Log comprehensive run statistics to chat when run ends
+     */
+    private void logRunStats(Player player, Object run) {
+        if (run == null || player == null) return;
+        
+        long elapsed = 0;
+        int wave = 0;
+        int level = 0;
+        int powerUpCount = 0;
+        Weapon weapon = null;
+        double health = 0;
+        double damage = 0;
+        double speed = 0;
+        double armor = 0;
+        double critChance = 0;
+        double critDamage = 0;
+        double lifesteal = 0;
+        double regeneration = 0;
+        double xpMultiplier = 0;
+        double dropRate = 0;
+        double difficulty = 0;
+        int teamSize = 1;
+        
+        if (run instanceof Run) {
+            Run r = (Run) run;
+            elapsed = r.getElapsedTime() / 1000;
+            wave = r.getWave();
+            level = r.getLevel();
+            powerUpCount = r.getCollectedPowerUps().size();
+            weapon = r.getWeapon();
+            health = r.getStat("health");
+            damage = r.getStat("damage");
+            speed = r.getStat("speed");
+            armor = r.getStat("armor");
+            critChance = r.getStat("crit_chance");
+            critDamage = r.getStat("crit_damage");
+            regeneration = r.getStat("regeneration");
+            xpMultiplier = r.getStat("xp_multiplier");
+            dropRate = r.getStat("drop_rate");
+            difficulty = r.getStat("difficulty");
+            
+            // Calculate lifesteal from Vampire Aura
+            for (com.eldor.roguecraft.models.PowerUp powerUp : r.getCollectedPowerUps()) {
+                if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
+                    String name = powerUp.getName().toLowerCase();
+                    if (name.contains("vampire") || name.contains("lifesteal")) {
+                        lifesteal += powerUp.getValue() * 2.0;
+                    }
+                }
+            }
+        } else if (run instanceof TeamRun) {
+            TeamRun tr = (TeamRun) run;
+            elapsed = tr.getElapsedTime() / 1000;
+            wave = tr.getWave();
+            level = tr.getLevel();
+            powerUpCount = tr.getCollectedPowerUps().size();
+            weapon = tr.getWeapon();
+            health = tr.getStat("health");
+            damage = tr.getStat("damage");
+            speed = tr.getStat("speed");
+            armor = tr.getStat("armor");
+            critChance = tr.getStat("crit_chance");
+            critDamage = tr.getStat("crit_damage");
+            regeneration = tr.getStat("regeneration");
+            xpMultiplier = tr.getStat("xp_multiplier");
+            dropRate = tr.getStat("drop_rate");
+            difficulty = tr.getStat("difficulty");
+            teamSize = tr.getPlayerCount();
+            
+            // Calculate lifesteal from Vampire Aura
+            for (com.eldor.roguecraft.models.PowerUp powerUp : tr.getCollectedPowerUps()) {
+                if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
+                    String name = powerUp.getName().toLowerCase();
+                    if (name.contains("vampire") || name.contains("lifesteal")) {
+                        lifesteal += powerUp.getValue() * 2.0;
+                    }
+                }
+            }
+        }
+        
+        // Format time
+        long minutes = elapsed / 60;
+        long seconds = elapsed % 60;
+        String timeStr = minutes > 0 ? minutes + "m " + seconds + "s" : seconds + "s";
+        
+        // Send formatted stats
+        player.sendMessage("");
+        player.sendMessage("§6╔════════════════════════════════════╗");
+        player.sendMessage("§6║        §c§lRUN STATISTICS§6        ║");
+        player.sendMessage("§6╠════════════════════════════════════╣");
+        player.sendMessage("§eTime Survived: §f" + timeStr);
+        player.sendMessage("§eWave Reached: §f" + wave);
+        player.sendMessage("§eLevel Reached: §f" + level);
+        if (teamSize > 1) {
+            player.sendMessage("§eTeam Size: §f" + teamSize);
+        }
+        player.sendMessage("§ePower-Ups Collected: §f" + powerUpCount);
+        player.sendMessage("");
+        player.sendMessage("§6╠════════════════════════════════════╣");
+        player.sendMessage("§6║          §a§lPLAYER STATS§6          ║");
+        player.sendMessage("§6╠════════════════════════════════════╣");
+        player.sendMessage("§aHealth: §f" + String.format("%.1f", health));
+        player.sendMessage("§cDamage: §f" + String.format("%.1f", damage));
+        player.sendMessage("§bSpeed: §f" + String.format("%.1f", speed));
+        player.sendMessage("§9Armor: §f" + String.format("%.1f", armor));
+        player.sendMessage("§5Crit Chance: §f" + String.format("%.1f%%", critChance * 100));
+        player.sendMessage("§dCrit Damage: §f" + String.format("%.2fx", critDamage));
+        if (lifesteal > 0) {
+            player.sendMessage("§cLifesteal: §f" + String.format("%.1f%%", lifesteal));
+        }
+        if (regeneration > 0) {
+            player.sendMessage("§aRegeneration: §f" + String.format("%.2f HP/s", regeneration));
+        }
+        player.sendMessage("§eXP Multiplier: §f" + String.format("%.2fx", xpMultiplier));
+        player.sendMessage("§bDrop Rate: §f" + String.format("%.1f%%", dropRate * 100));
+        player.sendMessage("§4Difficulty: §f" + String.format("%.2fx", difficulty));
+        
+        if (weapon != null) {
+            player.sendMessage("");
+            player.sendMessage("§6╠════════════════════════════════════╣");
+            player.sendMessage("§6║          §c§lWEAPON STATS§6          ║");
+            player.sendMessage("§6╠════════════════════════════════════╣");
+            player.sendMessage("§eType: §f" + weapon.getType().getDisplayName());
+            player.sendMessage("§eLevel: §f" + weapon.getLevel());
+            player.sendMessage("§cDamage: §f" + String.format("%.1f", weapon.getDamage()));
+            player.sendMessage("§bRange: §f" + String.format("%.1f", weapon.getRange()) + " blocks");
+            player.sendMessage("§aAttack Speed: §f" + String.format("%.2f", weapon.getAttackSpeed()) + "/s");
+            if (weapon.getProjectileCount() > 1) {
+                player.sendMessage("§dProjectiles: §f" + weapon.getProjectileCount());
+            }
+            if (weapon.getAreaOfEffect() > 0) {
+                player.sendMessage("§6AOE: §f" + String.format("%.1f", weapon.getAreaOfEffect()) + " blocks");
+            }
+        }
+        
+        player.sendMessage("§6╚════════════════════════════════════╝");
+        player.sendMessage("");
     }
 }
