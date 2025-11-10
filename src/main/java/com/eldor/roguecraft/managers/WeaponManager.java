@@ -168,9 +168,10 @@ public class WeaponManager {
         double critDamage = 1.5;
         
         if (teamRun != null && teamRun.isActive()) {
-            damageMultiplier = teamRun.getStat("damage");
-            critChance = teamRun.getStat("crit_chance");
-            critDamage = teamRun.getStat("crit_damage");
+            // Use player-specific stats
+            damageMultiplier = teamRun.getStat(player, "damage");
+            critChance = teamRun.getStat(player, "crit_chance");
+            critDamage = teamRun.getStat(player, "crit_damage");
         } else {
             run = plugin.getRunManager().getRun(player);
             if (run != null && run.isActive()) {
@@ -286,7 +287,8 @@ public class WeaponManager {
         
         // Check for Vampire Aura power-up (check both "Vampire Aura" and "Lifesteal" names)
         if (teamRun != null && teamRun.isActive()) {
-            for (com.eldor.roguecraft.models.PowerUp powerUp : teamRun.getCollectedPowerUps()) {
+            // Use player-specific power-ups
+            for (com.eldor.roguecraft.models.PowerUp powerUp : teamRun.getCollectedPowerUps(player)) {
                 if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
                     String name = powerUp.getName().toLowerCase();
                     if (name.contains("vampire") || name.contains("lifesteal")) {
@@ -366,7 +368,8 @@ public class WeaponManager {
         
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
         if (teamRun != null && teamRun.isActive()) {
-            for (com.eldor.roguecraft.models.PowerUp powerUp : teamRun.getCollectedPowerUps()) {
+            // Use player-specific power-ups
+            for (com.eldor.roguecraft.models.PowerUp powerUp : teamRun.getCollectedPowerUps(player)) {
                 if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD) {
                     mods.add(powerUp);
                 }
@@ -546,8 +549,10 @@ public class WeaponManager {
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
         Run run = null;
         if (teamRun != null && teamRun.isActive()) {
-            if (teamRun.getWeapon() != null) {
-                baseDamage = teamRun.getWeapon().getDamage();
+            // Use player-specific weapon
+            Weapon playerWeapon = teamRun.getWeapon(player);
+            if (playerWeapon != null) {
+                baseDamage = playerWeapon.getDamage();
             }
         } else {
             run = plugin.getRunManager().getRun(player);
@@ -558,15 +563,38 @@ public class WeaponManager {
             }
         }
         
-        double explosionDamage = baseDamage * damagePercent; // 65% of base damage
+        double baseExplosionDamage = baseDamage * damagePercent; // 65% of base damage
+        
+        // Get team members to exclude from damage
+        Set<UUID> teamMemberIds = new HashSet<>();
+        if (teamRun != null && teamRun.isActive()) {
+            teamMemberIds.addAll(teamRun.getPlayerIds());
+        }
         
         // Apply damage to nearby enemies
         for (org.bukkit.entity.Entity entity : explodeLoc.getWorld().getNearbyEntities(explodeLoc, explosionRadius, explosionRadius, explosionRadius)) {
-            if (entity instanceof LivingEntity && !(entity instanceof org.bukkit.entity.Player) && entity != target) {
+            if (entity instanceof LivingEntity && entity != target) {
+                // Exclude team members
+                if (entity instanceof org.bukkit.entity.Player) {
+                    org.bukkit.entity.Player targetPlayer = (org.bukkit.entity.Player) entity;
+                    if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                        continue; // Skip team members
+                    }
+                }
+                
                 LivingEntity living = (LivingEntity) entity;
+                
+                // Check if it's a boss - apply additional damage reduction for explosion effects
+                boolean isBoss = living.hasMetadata("roguecraft_boss") || living.hasMetadata("roguecraft_elite_boss");
+                double effectiveExplosionDamage = baseExplosionDamage;
+                if (isBoss) {
+                    // Explosion effects deal reduced damage to bosses (50% of normal damage)
+                    effectiveExplosionDamage *= 0.5;
+                }
+                
                 double distance = entity.getLocation().distance(explodeLoc);
                 double distanceMultiplier = Math.max(0.1, 1.0 - (distance / explosionRadius));
-                double finalDamage = calculateFinalDamage(player, explosionDamage * distanceMultiplier, living);
+                double finalDamage = calculateFinalDamage(player, effectiveExplosionDamage * distanceMultiplier, living);
                 living.damage(finalDamage, player);
                 living.getWorld().spawnParticle(Particle.EXPLOSION, living.getLocation(), 3, 0.2, 0.2, 0.2, 0.05);
             }
@@ -590,8 +618,10 @@ public class WeaponManager {
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
         Run run = null;
         if (teamRun != null && teamRun.isActive()) {
-            if (teamRun.getWeapon() != null) {
-                baseDamage = teamRun.getWeapon().getDamage();
+            // Use player-specific weapon
+            Weapon playerWeapon = teamRun.getWeapon(player);
+            if (playerWeapon != null) {
+                baseDamage = playerWeapon.getDamage();
             }
         } else {
             run = plugin.getRunManager().getRun(player);
@@ -602,13 +632,36 @@ public class WeaponManager {
             }
         }
         
+        // Get team members to exclude from damage
+        Set<UUID> teamMemberIds = new HashSet<>();
+        if (teamRun != null && teamRun.isActive()) {
+            teamMemberIds.addAll(teamRun.getPlayerIds());
+        }
+        
         // Apply damage and knockback to nearby enemies
         for (org.bukkit.entity.Entity entity : blastLoc.getWorld().getNearbyEntities(blastLoc, blastRadius, blastRadius, blastRadius)) {
-            if (entity instanceof LivingEntity && !(entity instanceof org.bukkit.entity.Player)) {
+            if (entity instanceof LivingEntity) {
+                // Exclude team members
+                if (entity instanceof org.bukkit.entity.Player) {
+                    org.bukkit.entity.Player targetPlayer = (org.bukkit.entity.Player) entity;
+                    if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                        continue; // Skip team members
+                    }
+                }
+                
                 LivingEntity living = (LivingEntity) entity;
+                
+                // Check if it's a boss - apply additional damage reduction for blast effects
+                boolean isBoss = living.hasMetadata("roguecraft_boss") || living.hasMetadata("roguecraft_elite_boss");
+                double effectiveBaseDamage = baseDamage;
+                if (isBoss) {
+                    // Blast effects deal reduced damage to bosses (50% of normal damage)
+                    effectiveBaseDamage *= 0.5;
+                }
+                
                 double distance = entity.getLocation().distance(blastLoc);
                 double distanceMultiplier = Math.max(0.1, 1.0 - (distance / blastRadius));
-                double finalDamage = calculateFinalDamage(player, baseDamage * distanceMultiplier, living);
+                double finalDamage = calculateFinalDamage(player, effectiveBaseDamage * distanceMultiplier, living);
                 living.damage(finalDamage, player);
                 
                 // Knockback
@@ -846,6 +899,13 @@ public class WeaponManager {
         player.getWorld().spawnParticle(Particle.ELECTRIC_SPARK, targetLoc.clone().add(0, 1, 0), 50, 0.5, 2, 0.5, 0.1);
         player.getWorld().playSound(targetLoc, Sound.ENTITY_LIGHTNING_BOLT_IMPACT, 0.5f, 1.0f);
         
+        // Get team members to exclude from damage
+        com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        Set<UUID> teamMemberIds = new HashSet<>();
+        if (teamRun != null && teamRun.isActive()) {
+            teamMemberIds.addAll(teamRun.getPlayerIds());
+        }
+        
         // Damage nearby enemies within effective range (not unlimited range)
         double totalDamageDealt = 0.0;
         double aoe = weapon.getAreaOfEffect();
@@ -855,7 +915,15 @@ public class WeaponManager {
         Set<LivingEntity> hitEntities = new HashSet<>();
         
         for (Entity entity : targetLoc.getWorld().getNearbyEntities(targetLoc, effectiveAOE, effectiveAOE, effectiveAOE)) {
-            if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+            if (entity instanceof LivingEntity) {
+                // Exclude team members
+                if (entity instanceof Player) {
+                    Player targetPlayer = (Player) entity;
+                    if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                        continue; // Skip team members
+                    }
+                }
+                
                 LivingEntity living = (LivingEntity) entity;
                 // Check if within effective range from player
                 double distance = player.getLocation().distance(living.getLocation());
@@ -888,6 +956,14 @@ public class WeaponManager {
                 
                 for (Entity entity : lastHit.getNearbyEntities(chainRange, chainRange, chainRange)) {
                     if (entity instanceof LivingEntity && !(entity instanceof Player) && !chainedEntities.contains(entity)) {
+                        // Exclude team members
+                        if (entity instanceof Player) {
+                            Player targetPlayer = (Player) entity;
+                            if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                                continue; // Skip team members
+                            }
+                        }
+                        
                         double dist = lastHit.getLocation().distanceSquared(entity.getLocation());
                         if (dist < nearestDist) {
                             nearestDist = dist;
@@ -945,9 +1021,24 @@ public class WeaponManager {
                 // Store actual explosion location for XP attribution
                 tnt.setMetadata("roguecraft_tnt_explosion_loc", new org.bukkit.metadata.FixedMetadataValue(plugin, explodeLoc.clone()));
                 
+                // Get team members to exclude from damage
+                com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+                Set<UUID> teamMemberIds = new HashSet<>();
+                if (teamRun != null && teamRun.isActive()) {
+                    teamMemberIds.addAll(teamRun.getPlayerIds());
+                }
+                
                 double totalDamageDealt = 0.0;
                 for (Entity entity : explodeLoc.getWorld().getNearbyEntities(explodeLoc, weapon.getAreaOfEffect(), weapon.getAreaOfEffect(), weapon.getAreaOfEffect())) {
-                    if (entity instanceof LivingEntity && entity != player) { // Exclude the player who spawned TNT
+                    if (entity instanceof LivingEntity && entity != player) {
+                        // Exclude team members from damage
+                        if (entity instanceof Player) {
+                            Player targetPlayer = (Player) entity;
+                            if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                                continue; // Skip team members
+                            }
+                        }
+                        
                         double distance = entity.getLocation().distance(explodeLoc);
                         double distanceMultiplier = Math.max(0.1, 1.0 - (distance / weapon.getAreaOfEffect()));
                         double baseDamage = weapon.getDamage() * distanceMultiplier;

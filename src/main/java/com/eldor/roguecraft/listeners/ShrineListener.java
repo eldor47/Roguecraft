@@ -39,13 +39,28 @@ public class ShrineListener implements Listener {
         
         Player player = event.getPlayer();
         
-        // Check if player is in a run
+        // Check if player is in a run (team or solo)
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player.getUniqueId());
-        if (teamRun == null || !teamRun.isActive()) return;
+        Run run = null;
+        boolean inRun = false;
+        UUID teamId = null;
         
-        // Get team ID (use first player's UUID)
-        UUID teamId = getTeamRunId(teamRun);
-        if (teamId == null) return;
+        if (teamRun != null && teamRun.isActive()) {
+            inRun = true;
+            // Get team ID (use first player's UUID)
+            teamId = getTeamRunId(teamRun);
+            if (teamId == null) return;
+        } else {
+            run = plugin.getRunManager().getRun(player.getUniqueId());
+            if (run != null && run.isActive()) {
+                inRun = true;
+                teamId = run.getPlayerId();
+            }
+        }
+        
+        if (!inRun || teamId == null) {
+            return;
+        }
         
         // Check if player is already channeling - don't try to start again
         if (plugin.getShrineManager().isPlayerChanneling(player.getUniqueId())) {

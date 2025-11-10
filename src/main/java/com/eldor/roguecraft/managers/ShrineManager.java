@@ -134,9 +134,14 @@ public class ShrineManager {
             plugin.getLogger().info("[Shrine] Removing " + shrines.size() + " shrines for team " + teamId);
             for (Shrine shrine : shrines) {
                 if (shrine != null) {
-                    shrine.remove();
+                    try {
+                        shrine.remove();
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[Shrine] Error removing shrine: " + e.getMessage());
+                    }
                 }
             }
+            shrines.clear(); // Clear the list after removal
         } else {
             // Also check if there are any shrines still in the map (cleanup any orphaned shrines)
             List<Shrine> allShrines = arenaShrines.get(teamId);
@@ -144,12 +149,19 @@ public class ShrineManager {
                 plugin.getLogger().warning("[Shrine] Found orphaned shrines for team " + teamId + ", removing them");
                 for (Shrine shrine : allShrines) {
                     if (shrine != null) {
-                        shrine.remove();
+                        try {
+                            shrine.remove();
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("[Shrine] Error removing orphaned shrine: " + e.getMessage());
+                        }
                     }
                 }
                 arenaShrines.remove(teamId);
             }
         }
+        
+        // Final verification - ensure the list is cleared
+        arenaShrines.remove(teamId);
     }
     
     /**
@@ -1015,8 +1027,8 @@ public class ShrineManager {
             double value = powerUp.getValue();
             
             if (teamRun != null) {
-                teamRun.addStat(statName, value);
-                teamRun.addPowerUp(powerUp);
+                teamRun.addStat(player, statName, value);
+                teamRun.addPowerUp(player, powerUp);
             } else if (run != null) {
                 run.addStat(statName, value);
                 run.addPowerUp(powerUp);
@@ -1024,7 +1036,7 @@ public class ShrineManager {
             
             // Apply stat immediately if it's health or speed
             if (statName.equals("health")) {
-                double health = teamRun != null ? teamRun.getStat("health") : run.getStat("health");
+                double health = teamRun != null ? teamRun.getStat(player, "health") : run.getStat("health");
                 org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
                 org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
                 if (healthInstance != null) {
@@ -1032,7 +1044,7 @@ public class ShrineManager {
                     player.setHealth(Math.min(health, player.getHealth()));
                 }
             } else if (statName.equals("speed")) {
-                double speed = teamRun != null ? teamRun.getStat("speed") : run.getStat("speed");
+                double speed = teamRun != null ? teamRun.getStat(player, "speed") : run.getStat("speed");
                 double baseSpeed = 0.1;
                 double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
                 org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;

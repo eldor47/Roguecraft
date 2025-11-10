@@ -33,9 +33,11 @@ import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 public class GameListener implements Listener {
@@ -466,12 +468,27 @@ public class GameListener implements Listener {
                 if (tntOwner != null && tntOwner.isOnline()) {
                     Location explosionLoc = tnt.getLocation();
                     
+                    // Get team members to exclude from damage
+                    com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(tntOwner);
+                    Set<UUID> teamMemberIds = new HashSet<>();
+                    if (teamRun != null && teamRun.isActive()) {
+                        teamMemberIds.addAll(teamRun.getPlayerIds());
+                    }
+                    
                     // Tag all nearby entities that will be damaged by this explosion
                     // Use a larger radius to catch all potential victims (TNT yield can be up to ~8 blocks)
                     double radius = Math.max(15.0, tnt.getYield() * 3); // TNT yield * 3 for safety
                     for (Entity nearbyEntity : explosionLoc.getWorld().getNearbyEntities(explosionLoc, radius, radius, radius)) {
-                        // Exclude the player who spawned the TNT
+                        // Exclude the player who spawned the TNT and team members
                         if (nearbyEntity instanceof LivingEntity && nearbyEntity != tntOwner) {
+                            // Exclude team members
+                            if (nearbyEntity instanceof Player) {
+                                Player targetPlayer = (Player) nearbyEntity;
+                                if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                                    continue; // Skip team members
+                                }
+                            }
+                            
                             LivingEntity living = (LivingEntity) nearbyEntity;
                             // Tag entity for XP attribution (use setMetadata which will overwrite if exists)
                             living.setMetadata("roguecraft_tnt_damaged", new org.bukkit.metadata.FixedMetadataValue(plugin, tntOwner.getUniqueId().toString()));
@@ -1113,7 +1130,8 @@ public class GameListener implements Listener {
                         Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
                         double distance = item.getLocation().distance(playerLoc);
                         // Much faster pull speed for boss reward (increased from 1.0)
-                        double pullSpeed = distance > 20 ? 2.0 : 3.5; // Faster when closer
+                        // Reduced by 10%: 2.0 -> 1.8, 3.5 -> 3.15
+                        double pullSpeed = distance > 20 ? 1.8 : 3.15; // Faster when closer
                         item.setVelocity(direction.multiply(pullSpeed));
                         
                         // Visual effect
@@ -1197,7 +1215,8 @@ public class GameListener implements Listener {
                         Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
                         double distance = item.getLocation().distance(playerLoc);
                         // Faster pull speed (increased from 0.5 to 1.5), and even faster when close
-                        double pullSpeed = distance > 10 ? 1.5 : 2.5; // Speed of pull - faster when closer
+                        // Reduced by 10%: 1.5 -> 1.35, 2.5 -> 2.25
+                        double pullSpeed = distance > 10 ? 1.35 : 2.25; // Speed of pull - faster when closer
                         item.setVelocity(direction.multiply(pullSpeed));
                         
                         // Visual effect

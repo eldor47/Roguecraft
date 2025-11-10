@@ -252,9 +252,21 @@ public class Shrine {
             return; // Can't remove if location is invalid
         }
         
+        Location shrineLoc = getLocation();
+        org.bukkit.World world = shrineLoc.getWorld();
+        
+        // Ensure chunk is loaded
+        if (!shrineLoc.getChunk().isLoaded()) {
+            shrineLoc.getChunk().load();
+        }
+        
         // Remove all tracked blocks
         for (Block block : blocks) {
             if (block != null && block.getWorld() != null) {
+                // Ensure chunk is loaded
+                if (!block.getChunk().isLoaded()) {
+                    block.getChunk().load();
+                }
                 block.setType(Material.AIR);
                 // Force light update to remove dark spots
                 block.getWorld().refreshChunk(block.getChunk().getX(), block.getChunk().getZ());
@@ -263,19 +275,29 @@ public class Shrine {
         
         // Also check the area around the shrine location to catch any missed blocks
         // Sometimes blocks might not be in the list if build() failed partially
-        Location shrineLoc = getLocation();
-        if (shrineLoc != null && shrineLoc.getWorld() != null) {
+        if (shrineLoc != null && world != null) {
             // Difficulty shrine: only has a dark block at y=0 and skull at y=1
             if (type == ShrineType.DIFFICULTY) {
                 // Remove the dark block
                 Block darkBlock = shrineLoc.clone().add(0, 0, 0).getBlock();
-                if (darkBlock != null && (darkBlock.getType() == Material.BLACK_CONCRETE || darkBlock.getType() == Material.BLACK_TERRACOTTA)) {
-                    darkBlock.setType(Material.AIR);
+                if (darkBlock != null) {
+                    if (!darkBlock.getChunk().isLoaded()) {
+                        darkBlock.getChunk().load();
+                    }
+                    Material darkMat = darkBlock.getType();
+                    if (darkMat == Material.BLACK_CONCRETE || darkMat == Material.BLACK_TERRACOTTA) {
+                        darkBlock.setType(Material.AIR);
+                    }
                 }
                 // Remove the skull block
                 Block skullBlock = shrineLoc.clone().add(0, 1, 0).getBlock();
-                if (skullBlock != null && skullBlock.getType() == Material.SKELETON_SKULL) {
-                    skullBlock.setType(Material.AIR);
+                if (skullBlock != null) {
+                    if (!skullBlock.getChunk().isLoaded()) {
+                        skullBlock.getChunk().load();
+                    }
+                    if (skullBlock.getType() == Material.SKELETON_SKULL) {
+                        skullBlock.setType(Material.AIR);
+                    }
                 }
             } else {
                 // Boss and Power shrines: determine cleanup area based on shrine type
@@ -287,6 +309,10 @@ public class Shrine {
                     for (int z = -baseRadius; z <= baseRadius; z++) {
                         Block block = shrineLoc.clone().add(x, 0, z).getBlock();
                         if (block == null) continue; // Skip if block is null
+                        // Ensure chunk is loaded
+                        if (!block.getChunk().isLoaded()) {
+                            block.getChunk().load();
+                        }
                         Material mat = block.getType();
                         // Check if it's a shrine material (concrete, terracotta, obsidian, blackstone, fence, etc.)
                         if (isShrineMaterial(mat) || mat == Material.OBSIDIAN || mat == Material.BLACKSTONE || 
@@ -301,6 +327,10 @@ public class Shrine {
                     // Check center pillar
                     Block block = shrineLoc.clone().add(0, y, 0).getBlock();
                     if (block == null) continue; // Skip if block is null
+                    // Ensure chunk is loaded
+                    if (!block.getChunk().isLoaded()) {
+                        block.getChunk().load();
+                    }
                     Material mat = block.getType();
                     if (isShrineMaterial(mat) || isLightMaterial(mat) || mat == Material.END_ROD) {
                         block.setType(Material.AIR);
@@ -313,6 +343,10 @@ public class Shrine {
                                 if (x == 0 && z == 0) continue; // Skip center (pillar)
                                 Block ringBlock = shrineLoc.clone().add(x, y, z).getBlock();
                                 if (ringBlock == null) continue; // Skip if block is null
+                                // Ensure chunk is loaded
+                                if (!ringBlock.getChunk().isLoaded()) {
+                                    ringBlock.getChunk().load();
+                                }
                                 Material ringMat = ringBlock.getType();
                                 if (ringMat == Material.SOUL_TORCH || ringMat == Material.BLACKSTONE) {
                                     ringBlock.setType(Material.AIR);

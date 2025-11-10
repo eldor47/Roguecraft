@@ -51,8 +51,8 @@ public class PowerUpGUI implements Listener {
         this.player = player;
         this.run = null;
         this.teamRun = teamRun;
-        // Use dynamic power-up generation with luck scaling
-        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(teamRun.getLevel(), teamRun.getStat("luck"), teamRun);
+        // Use dynamic power-up generation with luck scaling (player-specific)
+        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(teamRun.getLevel(), teamRun.getStat(player, "luck"), teamRun);
         this.inventory = Bukkit.createInventory(null, 36, "§6Choose Your Power-Up");
         
         Bukkit.getPluginManager().registerEvents(this, plugin);
@@ -81,14 +81,14 @@ public class PowerUpGUI implements Listener {
     }
     
     private int getRerollsRemaining() {
-        return run != null ? run.getRerollsRemaining() : (teamRun != null ? teamRun.getRerollsRemaining() : 0);
+        return run != null ? run.getRerollsRemaining() : (teamRun != null ? teamRun.getRerollsRemaining(player) : 0);
     }
     
     private void useReroll() {
         if (run != null) {
             run.useReroll();
         } else if (teamRun != null) {
-            teamRun.useReroll();
+            teamRun.useReroll(player);
         }
     }
 
@@ -177,13 +177,13 @@ public class PowerUpGUI implements Listener {
             lore.add(ChatColor.DARK_RED + "Difficulty: " + ChatColor.WHITE + String.format("%.2fx", run.getStat("difficulty")));
             
             // Calculate and display lifesteal from Vampire Aura
-            double lifesteal = calculateLifesteal(run);
+            double lifesteal = calculateLifesteal(run, player);
             if (lifesteal > 0) {
                 lore.add(ChatColor.RED + "Lifesteal: " + ChatColor.WHITE + String.format("%.1f%%", lifesteal) + " of damage");
             }
             
             // Show active auras
-            List<String> activeAuras = getActiveAuraNames(run);
+            List<String> activeAuras = getActiveAuraNames(run, player);
             if (!activeAuras.isEmpty()) {
                 lore.add("");
                 lore.add(ChatColor.GOLD + "Active Auras:");
@@ -210,26 +210,26 @@ public class PowerUpGUI implements Listener {
                 }
             }
         } else if (teamRun != null) {
-            lore.add(ChatColor.GREEN + "Health: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("health")));
-            lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("damage")));
-            lore.add(ChatColor.AQUA + "Speed: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("speed")));
-            lore.add(ChatColor.BLUE + "Armor: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat("armor")));
-            lore.add(ChatColor.DARK_PURPLE + "Crit Chance: " + ChatColor.WHITE + String.format("%.1f%%", teamRun.getStat("crit_chance") * 100));
-            lore.add(ChatColor.LIGHT_PURPLE + "Crit Damage: " + ChatColor.WHITE + String.format("%.1fx", teamRun.getStat("crit_damage")));
-            lore.add(ChatColor.GOLD + "Luck: " + ChatColor.WHITE + String.format("%.2f", teamRun.getStat("luck")));
-            lore.add(ChatColor.YELLOW + "XP Multi: " + ChatColor.WHITE + String.format("%.2fx", teamRun.getStat("xp_multiplier")));
-            lore.add(ChatColor.GREEN + "Regeneration: " + ChatColor.WHITE + String.format("%.2f HP/s", teamRun.getStat("regeneration")));
-            lore.add(ChatColor.AQUA + "Drop Rate: " + ChatColor.WHITE + String.format("%.1f%%", teamRun.getStat("drop_rate") * 100));
-            lore.add(ChatColor.DARK_RED + "Difficulty: " + ChatColor.WHITE + String.format("%.2fx", teamRun.getStat("difficulty")));
+            lore.add(ChatColor.GREEN + "Health: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat(player, "health")));
+            lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat(player, "damage")));
+            lore.add(ChatColor.AQUA + "Speed: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat(player, "speed")));
+            lore.add(ChatColor.BLUE + "Armor: " + ChatColor.WHITE + String.format("%.1f", teamRun.getStat(player, "armor")));
+            lore.add(ChatColor.DARK_PURPLE + "Crit Chance: " + ChatColor.WHITE + String.format("%.1f%%", teamRun.getStat(player, "crit_chance") * 100));
+            lore.add(ChatColor.LIGHT_PURPLE + "Crit Damage: " + ChatColor.WHITE + String.format("%.1fx", teamRun.getStat(player, "crit_damage")));
+            lore.add(ChatColor.GOLD + "Luck: " + ChatColor.WHITE + String.format("%.2f", teamRun.getStat(player, "luck")));
+            lore.add(ChatColor.YELLOW + "XP Multi: " + ChatColor.WHITE + String.format("%.2fx", teamRun.getStat(player, "xp_multiplier")));
+            lore.add(ChatColor.GREEN + "Regeneration: " + ChatColor.WHITE + String.format("%.2f HP/s", teamRun.getStat(player, "regeneration")));
+            lore.add(ChatColor.AQUA + "Drop Rate: " + ChatColor.WHITE + String.format("%.1f%%", teamRun.getStat(player, "drop_rate") * 100));
+            lore.add(ChatColor.DARK_RED + "Difficulty: " + ChatColor.WHITE + String.format("%.2fx", teamRun.getStat(player, "difficulty")));
             
             // Calculate and display lifesteal from Vampire Aura
-            double lifesteal = calculateLifesteal(teamRun);
+            double lifesteal = calculateLifesteal(teamRun, player);
             if (lifesteal > 0) {
                 lore.add(ChatColor.RED + "Lifesteal: " + ChatColor.WHITE + String.format("%.1f%%", lifesteal) + " of damage");
             }
             
             // Show active auras
-            List<String> activeAuras = getActiveAuraNames(teamRun);
+            List<String> activeAuras = getActiveAuraNames(teamRun, player);
             if (!activeAuras.isEmpty()) {
                 lore.add("");
                 lore.add(ChatColor.GOLD + "Active Auras:");
@@ -239,7 +239,7 @@ public class PowerUpGUI implements Listener {
             }
             
             // Show weapon stats
-            Weapon weapon = teamRun.getWeapon();
+            Weapon weapon = teamRun.getWeapon(player);
             if (weapon != null) {
                 lore.add("");
                 lore.add(ChatColor.GOLD + "Weapon Stats:");
@@ -275,7 +275,8 @@ public class PowerUpGUI implements Listener {
         if (run != null) {
             collectedItems = run.getCollectedGachaItems();
         } else if (teamRun != null) {
-            collectedItems = teamRun.getCollectedGachaItems();
+            // Get player-specific gacha items
+            collectedItems = teamRun.getCollectedGachaItems(player);
         } else {
             collectedItems = new ArrayList<>();
         }
@@ -318,7 +319,8 @@ public class PowerUpGUI implements Listener {
         if (run != null) {
             collectedItems = run.getCollectedGachaItems();
         } else if (teamRun != null) {
-            collectedItems = teamRun.getCollectedGachaItems();
+            // Get player-specific gacha items
+            collectedItems = teamRun.getCollectedGachaItems(player);
         } else {
             collectedItems = new ArrayList<>();
         }
@@ -381,7 +383,7 @@ public class PowerUpGUI implements Listener {
         
         // Add predicted weapon stats for weapon upgrades
         if (powerUp.getType() == PowerUp.PowerUpType.WEAPON_UPGRADE) {
-            Weapon weapon = run != null ? run.getWeapon() : (teamRun != null ? teamRun.getWeapon() : null);
+            Weapon weapon = run != null ? run.getWeapon() : (teamRun != null ? teamRun.getWeapon(player) : null);
             if (weapon != null) {
                 int levels = (int) powerUp.getValue();
                 PredictedWeaponStats predicted = calculatePredictedWeaponStats(weapon, levels);
@@ -607,7 +609,8 @@ public class PowerUpGUI implements Listener {
             run.addPowerUp(powerUp);
             applyPowerUp(powerUp, run);
         } else if (teamRun != null) {
-            teamRun.addPowerUp(powerUp);
+            // Add power-up to this specific player
+            teamRun.addPowerUp(player, powerUp);
             applyPowerUp(powerUp, teamRun);
             
             // Notify team members
@@ -724,79 +727,75 @@ public class PowerUpGUI implements Listener {
                 applyStatBoost(powerUp, teamRun);
                 break;
             case WEAPON_UPGRADE:
-                // Upgrade weapon and show stat changes
-                if (teamRun.getWeapon() != null) {
-                    Weapon weapon = teamRun.getWeapon();
+                // Upgrade weapon and show stat changes (per-player weapon)
+                Weapon playerWeapon = teamRun.getWeapon(player);
+                if (playerWeapon != null) {
                     int levels = (int) powerUp.getValue();
                     
                     // Store stats before upgrade
-                    int oldLevel = weapon.getLevel();
-                    double oldDamage = weapon.getDamage();
-                    double oldRange = weapon.getRange();
-                    double oldAttackSpeed = weapon.getAttackSpeed();
-                    int oldProjectiles = weapon.getProjectileCount();
-                    double oldAOE = weapon.getAreaOfEffect();
+                    int oldLevel = playerWeapon.getLevel();
+                    double oldDamage = playerWeapon.getDamage();
+                    double oldRange = playerWeapon.getRange();
+                    double oldAttackSpeed = playerWeapon.getAttackSpeed();
+                    int oldProjectiles = playerWeapon.getProjectileCount();
+                    double oldAOE = playerWeapon.getAreaOfEffect();
                     
                     // Apply upgrades
                     for (int i = 0; i < levels; i++) {
-                        weapon.upgrade();
+                        playerWeapon.upgrade();
                     }
                     
                     // Calculate changes
-                    double damageChange = weapon.getDamage() - oldDamage;
-                    double rangeChange = weapon.getRange() - oldRange;
-                    double speedChange = weapon.getAttackSpeed() - oldAttackSpeed;
-                    int projectileChange = weapon.getProjectileCount() - oldProjectiles;
-                    double aoeChange = weapon.getAreaOfEffect() - oldAOE;
+                    double damageChange = playerWeapon.getDamage() - oldDamage;
+                    double rangeChange = playerWeapon.getRange() - oldRange;
+                    double speedChange = playerWeapon.getAttackSpeed() - oldAttackSpeed;
+                    int projectileChange = playerWeapon.getProjectileCount() - oldProjectiles;
+                    double aoeChange = playerWeapon.getAreaOfEffect() - oldAOE;
                     
-                    // Show upgrade message with stat changes to all team members
-                    for (Player p : teamRun.getPlayers()) {
-                        if (p != null && p.isOnline()) {
-                            p.sendMessage(ChatColor.GREEN + "⚔ Weapon upgraded to level " + weapon.getLevel() + "!");
-                            p.sendMessage(ChatColor.GRAY + "Stat Changes:");
-                            if (damageChange > 0) {
-                                p.sendMessage(ChatColor.RED + "  Damage: " + ChatColor.WHITE + String.format("%.1f", oldDamage) + 
-                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getDamage()) + 
-                                             ChatColor.GRAY + " (+" + String.format("%.1f", damageChange) + ")");
-                            }
-                            if (rangeChange > 0) {
-                                p.sendMessage(ChatColor.AQUA + "  Range: " + ChatColor.WHITE + String.format("%.1f", oldRange) + 
-                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getRange()) + 
-                                             ChatColor.GRAY + " (+" + String.format("%.1f", rangeChange) + " blocks)");
-                            }
-                            if (speedChange > 0) {
-                                p.sendMessage(ChatColor.GREEN + "  Attack Speed: " + ChatColor.WHITE + String.format("%.2f", oldAttackSpeed) + 
-                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", weapon.getAttackSpeed()) + 
-                                             ChatColor.GRAY + " (+" + String.format("%.2f", speedChange) + "/s)");
-                            }
-                            if (projectileChange > 0) {
-                                p.sendMessage(ChatColor.LIGHT_PURPLE + "  Projectiles: " + ChatColor.WHITE + oldProjectiles + 
-                                             ChatColor.GRAY + " → " + ChatColor.GREEN + weapon.getProjectileCount() + 
-                                             ChatColor.GRAY + " (+" + projectileChange + ")");
-                            }
-                            if (aoeChange > 0) {
-                                p.sendMessage(ChatColor.GOLD + "  AOE: " + ChatColor.WHITE + String.format("%.1f", oldAOE) + 
-                                             ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", weapon.getAreaOfEffect()) + 
-                                             ChatColor.GRAY + " (+" + String.format("%.1f", aoeChange) + " blocks)");
-                            }
-                        }
+                    // Show upgrade message with stat changes to this player only
+                    player.sendMessage(ChatColor.GREEN + "⚔ Weapon upgraded to level " + playerWeapon.getLevel() + "!");
+                    player.sendMessage(ChatColor.GRAY + "Stat Changes:");
+                    if (damageChange > 0) {
+                        player.sendMessage(ChatColor.RED + "  Damage: " + ChatColor.WHITE + String.format("%.1f", oldDamage) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", playerWeapon.getDamage()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", damageChange) + ")");
+                    }
+                    if (rangeChange > 0) {
+                        player.sendMessage(ChatColor.AQUA + "  Range: " + ChatColor.WHITE + String.format("%.1f", oldRange) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", playerWeapon.getRange()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", rangeChange) + " blocks)");
+                    }
+                    if (speedChange > 0) {
+                        player.sendMessage(ChatColor.GREEN + "  Attack Speed: " + ChatColor.WHITE + String.format("%.2f", oldAttackSpeed) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", playerWeapon.getAttackSpeed()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.2f", speedChange) + "/s)");
+                    }
+                    if (projectileChange > 0) {
+                        player.sendMessage(ChatColor.LIGHT_PURPLE + "  Projectiles: " + ChatColor.WHITE + oldProjectiles + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + playerWeapon.getProjectileCount() + 
+                                         ChatColor.GRAY + " (+" + projectileChange + ")");
+                    }
+                    if (aoeChange > 0) {
+                        player.sendMessage(ChatColor.GOLD + "  AOE: " + ChatColor.WHITE + String.format("%.1f", oldAOE) + 
+                                         ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.1f", playerWeapon.getAreaOfEffect()) + 
+                                         ChatColor.GRAY + " (+" + String.format("%.1f", aoeChange) + " blocks)");
                     }
                 }
                 break;
             case WEAPON_MOD:
-                teamRun.addPowerUp(powerUp); // Track for weapon mod effects
+                teamRun.addPowerUp(player, powerUp); // Track for weapon mod effects (player-specific)
                 player.sendMessage(ChatColor.YELLOW + "Applied " + powerUp.getName() + "!");
                 break;
             case AURA:
-                teamRun.addPowerUp(powerUp); // Track for aura effects
+                teamRun.addPowerUp(player, powerUp); // Track for aura effects (player-specific)
                 player.sendMessage(ChatColor.LIGHT_PURPLE + "Activated " + powerUp.getName() + "!");
                 break;
             case SHRINE:
-                teamRun.addPowerUp(powerUp); // Track for shrine cooldowns
+                teamRun.addPowerUp(player, powerUp); // Track for shrine cooldowns (player-specific)
                 player.sendMessage(ChatColor.GOLD + "Unlocked " + powerUp.getName() + "!");
                 break;
             case SYNERGY:
-                teamRun.addPowerUp(powerUp); // Track for synergy effects
+                teamRun.addPowerUp(player, powerUp); // Track for synergy effects (player-specific)
                 // Apply Glass Cannon immediately if selected
                 if (powerUp.getName().equals("Glass Cannon")) {
                     applyGlassCannon(powerUp, teamRun, player);
@@ -852,55 +851,44 @@ public class PowerUpGUI implements Listener {
     private void applyStatBoost(PowerUp powerUp, TeamRun teamRun) {
         String id = powerUp.getId().toLowerCase();
         if (id.contains("health")) {
-            teamRun.addStat("health", powerUp.getValue());
-            // Apply health to all team members
-            for (Player p : teamRun.getPlayers()) {
-                if (p != null && p.isOnline()) {
-                    applyHealthAttribute(p, teamRun.getStat("health"));
-                }
-            }
+            // Add health stat for the player who selected the power-up
+            teamRun.addStat(player, "health", powerUp.getValue());
+            // Apply health to this player
+            applyHealthAttribute(player, teamRun.getStat(player, "health"));
             player.sendMessage(ChatColor.GREEN + "+" + String.format("%.1f", powerUp.getValue()) + " Health!");
         } else if (id.contains("damage")) {
-            teamRun.addStat("damage", powerUp.getValue());
+            teamRun.addStat(player, "damage", powerUp.getValue());
             player.sendMessage(ChatColor.RED + "+" + String.format("%.1f", powerUp.getValue()) + " Damage!");
         } else if (id.contains("speed")) {
-            teamRun.addStat("speed", powerUp.getValue());
-            // Apply speed to all team members
-            for (Player p : teamRun.getPlayers()) {
-                if (p != null && p.isOnline()) {
-                    applySpeedAttribute(p, teamRun.getStat("speed"));
-                }
-            }
+            teamRun.addStat(player, "speed", powerUp.getValue());
+            // Apply speed to this player
+            applySpeedAttribute(player, teamRun.getStat(player, "speed"));
             player.sendMessage(ChatColor.AQUA + "+" + String.format("%.2f", powerUp.getValue()) + " Speed!");
         } else if (id.contains("armor")) {
-            teamRun.addStat("armor", powerUp.getValue());
-            // Apply armor to all team members
-            for (Player p : teamRun.getPlayers()) {
-                if (p != null && p.isOnline()) {
-                    applyArmorAttribute(p, teamRun.getStat("armor"));
-                }
-            }
+            teamRun.addStat(player, "armor", powerUp.getValue());
+            // Apply armor to this player
+            applyArmorAttribute(player, teamRun.getStat(player, "armor"));
             player.sendMessage(ChatColor.BLUE + "+" + String.format("%.1f", powerUp.getValue()) + " Armor!");
         } else if (id.contains("crit_chance")) {
-            teamRun.addStat("crit_chance", powerUp.getValue());
+            teamRun.addStat(player, "crit_chance", powerUp.getValue());
             player.sendMessage(ChatColor.DARK_PURPLE + "+" + String.format("%.1f%%", powerUp.getValue() * 100) + " Crit Chance!");
         } else if (id.contains("crit_damage")) {
-            teamRun.addStat("crit_damage", powerUp.getValue());
+            teamRun.addStat(player, "crit_damage", powerUp.getValue());
             player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.2fx", powerUp.getValue()) + " Crit Damage!");
         } else if (id.contains("luck")) {
-            teamRun.addStat("luck", powerUp.getValue());
+            teamRun.addStat(player, "luck", powerUp.getValue());
             player.sendMessage(ChatColor.GOLD + "+" + String.format("%.2f", powerUp.getValue()) + " Luck!");
         } else if (id.contains("xp_multiplier")) {
-            teamRun.addStat("xp_multiplier", powerUp.getValue());
+            teamRun.addStat(player, "xp_multiplier", powerUp.getValue());
             player.sendMessage(ChatColor.YELLOW + "+" + String.format("%.1f%%", powerUp.getValue() * 100) + " XP Gain!");
         } else if (id.contains("regeneration") || id.contains("regen")) {
-            teamRun.addStat("regeneration", powerUp.getValue());
+            teamRun.addStat(player, "regeneration", powerUp.getValue());
             player.sendMessage(ChatColor.GREEN + "+" + String.format("%.2f", powerUp.getValue()) + " HP/s Regeneration!");
         } else if (id.contains("drop_rate") || id.contains("droprate") || id.contains("drop")) {
-            teamRun.addStat("drop_rate", powerUp.getValue());
+            teamRun.addStat(player, "drop_rate", powerUp.getValue());
             player.sendMessage(ChatColor.AQUA + "+" + String.format("%.1f%%", powerUp.getValue() * 100) + " Drop Rate!");
         } else if (id.contains("difficulty")) {
-            teamRun.addStat("difficulty", powerUp.getValue());
+            teamRun.addStat(player, "difficulty", powerUp.getValue());
             // Notify all team members
             for (Player p : teamRun.getPlayers()) {
                 if (p != null && p.isOnline()) {
@@ -951,12 +939,12 @@ public class PowerUpGUI implements Listener {
     /**
      * Calculate lifesteal percentage from Vampire Aura power-ups
      */
-    private double calculateLifesteal(Object run) {
+    private double calculateLifesteal(Object run, Player player) {
         if (run == null) return 0.0;
         
         List<com.eldor.roguecraft.models.PowerUp> powerUps;
         if (run instanceof com.eldor.roguecraft.models.TeamRun) {
-            powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps();
+            powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps(player);
         } else if (run instanceof com.eldor.roguecraft.models.Run) {
             powerUps = ((com.eldor.roguecraft.models.Run) run).getCollectedPowerUps();
         } else {
@@ -980,13 +968,13 @@ public class PowerUpGUI implements Listener {
     /**
      * Get list of active aura names
      */
-    private List<String> getActiveAuraNames(Object run) {
+    private List<String> getActiveAuraNames(Object run, Player player) {
         List<String> formattedAuras = new ArrayList<>();
         if (run == null) return formattedAuras;
 
         List<com.eldor.roguecraft.models.PowerUp> powerUps;
         if (run instanceof com.eldor.roguecraft.models.TeamRun) {
-            powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps();
+            powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps(player);
         } else if (run instanceof com.eldor.roguecraft.models.Run) {
             powerUps = ((com.eldor.roguecraft.models.Run) run).getCollectedPowerUps();
         } else {
@@ -1017,8 +1005,8 @@ public class PowerUpGUI implements Listener {
     private void reroll() {
         useReroll();
         powerUps.clear();
-        // Use dynamic generation with current luck
-        double luck = run != null ? run.getStat("luck") : (teamRun != null ? teamRun.getStat("luck") : 1.0);
+        // Use dynamic generation with current luck (player-specific for team runs)
+        double luck = run != null ? run.getStat("luck") : (teamRun != null ? teamRun.getStat(player, "luck") : 1.0);
         Object currentRun = run != null ? run : teamRun;
         powerUps.addAll(plugin.getPowerUpManager().generateDynamicPowerUps(getLevel(), luck, currentRun));
         setupGUI();
@@ -1034,10 +1022,13 @@ public class PowerUpGUI implements Listener {
                 
                 // Only restart ALL players' weapon auto-attacks if NO other players are in GUI
                 // This ensures the game stays paused while any player is selecting a power-up
-                if (!teamRun.hasAnyPlayerInGUI() && teamRun.getWeapon() != null) {
+                if (!teamRun.hasAnyPlayerInGUI()) {
                     for (Player teamPlayer : teamRun.getPlayers()) {
                         if (teamPlayer != null && teamPlayer.isOnline()) {
-                            plugin.getWeaponManager().startAutoAttack(teamPlayer, teamRun.getWeapon());
+                            Weapon playerWeapon = teamRun.getWeapon(teamPlayer);
+                            if (playerWeapon != null) {
+                                plugin.getWeaponManager().startAutoAttack(teamPlayer, playerWeapon);
+                            }
                         }
                     }
                 }
@@ -1078,19 +1069,16 @@ public class PowerUpGUI implements Listener {
     private void applyGlassCannon(PowerUp powerUp, TeamRun teamRun, Player player) {
         // Glass Cannon: +damage, -50% max HP
         double damageBoost = powerUp.getValue() * 100.0; // 100% per value point
-        teamRun.addStat("damage", powerUp.getValue());
+        // Add damage stat for the player who selected the power-up
+        teamRun.addStat(player, "damage", powerUp.getValue());
         
-        // Reduce max HP by 50%
-        double currentHealth = teamRun.getStat("health");
+        // Reduce max HP by 50% for this player only
+        double currentHealth = teamRun.getStat(player, "health");
         double newHealth = currentHealth * 0.5; // 50% reduction
-        teamRun.setStat("health", newHealth);
+        teamRun.setStat(player, "health", newHealth);
         
-        // Apply new health attribute to all team members
-        for (Player p : teamRun.getPlayers()) {
-            if (p != null && p.isOnline()) {
-                applyHealthAttribute(p, newHealth);
-            }
-        }
+        // Apply new health attribute to this player only
+        applyHealthAttribute(player, newHealth);
         
         // Notify all team members
         for (Player p : teamRun.getPlayers()) {

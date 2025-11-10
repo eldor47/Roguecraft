@@ -25,6 +25,7 @@ public class RoguecraftPlugin extends JavaPlugin {
     private SynergyManager synergyManager;
     private GachaManager gachaManager;
     private ChestManager chestManager;
+    private TeamLobbyManager teamLobbyManager;
 
     @Override
     public void onEnable() {
@@ -52,6 +53,7 @@ public class RoguecraftPlugin extends JavaPlugin {
             this.synergyManager = new SynergyManager(this);
             this.gachaManager = new GachaManager(this);
             this.chestManager = new ChestManager(this);
+            this.teamLobbyManager = new TeamLobbyManager(this);
             this.gameManager = new GameManager(this);
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Failed to initialize managers", e);
@@ -210,5 +212,9 @@ public class RoguecraftPlugin extends JavaPlugin {
     
     public ChestManager getChestManager() {
         return chestManager;
+    }
+    
+    public TeamLobbyManager getTeamLobbyManager() {
+        return teamLobbyManager;
     }
 }

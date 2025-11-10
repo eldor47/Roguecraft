@@ -68,11 +68,10 @@ public class GachaRollGUI implements Listener {
         teamRun.setPlayerInGUI(player.getUniqueId(), true);
         
         // Stop ALL players' weapon auto-attacks when ANY player opens GUI (team-wide pause)
-        if (teamRun.getWeapon() != null) {
-            for (Player teamPlayer : teamRun.getPlayers()) {
-                if (teamPlayer != null && teamPlayer.isOnline()) {
-                    plugin.getWeaponManager().stopAutoAttack(teamPlayer);
-                }
+        // Check if any player has a weapon (since weapons are individual now)
+        for (Player teamPlayer : teamRun.getPlayers()) {
+            if (teamPlayer != null && teamPlayer.isOnline() && teamRun.getWeapon(teamPlayer) != null) {
+                plugin.getWeaponManager().stopAutoAttack(teamPlayer);
             }
         }
     }
@@ -243,9 +242,14 @@ public class GachaRollGUI implements Listener {
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
         player.playSound(player.getLocation(), Sound.ENTITY_FIREWORK_ROCKET_LAUNCH, 0.8f, 1.2f);
         
-        // Track collected item
+        // Track collected item (shared for team runs - all players get the same item)
         if (teamRun != null) {
-            teamRun.addGachaItem(finalItem);
+            // Add item to all team members (they all get the same roll)
+            for (Player teamPlayer : teamRun.getPlayers()) {
+                if (teamPlayer != null && teamPlayer.isOnline()) {
+                    teamRun.addGachaItem(teamPlayer, finalItem);
+                }
+            }
         } else if (run != null) {
             run.addGachaItem(finalItem);
         }

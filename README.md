@@ -584,12 +584,19 @@ spawns:
 ## Multiplayer
 
 ### Team Features
-- **Shared Progression** - All players share XP, level, and weapon
+- **Shared Progression** - All players share XP, level, gold, and wave progression
+- **Individual Progression** - Each player has their own:
+  - Weapon (choose independently, upgrade independently)
+  - Stats (health, damage, speed, armor, crit, luck, regen, etc.)
+  - Power-ups (build your own unique build)
+  - Gacha items (tracked individually, though chest rewards are shared)
+  - Rerolls (2 per player)
+- **Team Lobby System** - Invite players with `/rc invite <player>`, accept with `/rc accept`, mark ready with `/rc ready`, then start with `/rc start`
 - **Scaled Difficulty** - Enemy HP: +50% per player, Spawns: +30% per player
+- **Difficulty Stat** - Uses maximum difficulty from all players for team-wide mob scaling
 - **Individual GUIs** - Each player gets their own power-up selection
-- **Synchronized Levels** - Team levels up together
-- **Co-op Weapon** - Team chooses one weapon together at start
-- **Shared Stats** - Speed and health buffs apply to entire team
+- **Team-Wide Pause** - When any player opens a GUI, all team members' weapons pause and movement is blocked
+- **Synchronized Levels** - Team levels up together (shared XP)
 
 ### Joining Mid-Run
 - Players can join active runs
@@ -824,6 +831,19 @@ After reaching the maximum wave (default: 20), **Infinite Mode** activates:
 ## Version History
 
 ### Latest Updates (Recent)
+- **Team Run Individual Progression** - Major refactoring for proper multiplayer support:
+  - **Individual Player Stats** - Each player now has their own health, damage, speed, armor, crit chance, crit damage, luck, regeneration, drop rate, pickup range, jump height, and XP multiplier stats
+  - **Individual Weapons** - Each player chooses and upgrades their own weapon independently
+  - **Individual Power-Ups** - Power-ups are tracked per player, each player builds their own build
+  - **Individual Gacha Items** - Gacha items are tracked per player (though chest rewards are shared)
+  - **Individual Rerolls** - Each player has their own reroll count (2 per player)
+  - **Shared Resources** - XP, gold, and wave progression remain shared across the team
+  - **Difficulty Scaling** - Uses maximum difficulty stat from all players for team-wide mob scaling
+  - **Team Lobby System** - New invite system (`/rc invite <player>`, `/rc accept`, `/rc ready`) for forming teams before starting runs
+  - **Fixed Weapon Swapping Bug** - Weapons no longer swap between players after upgrades
+  - **Fixed Health/Regeneration** - Health and regeneration stats now apply correctly per player
+  - **Fixed Shrine Channeling** - Power shrines now work for both solo and team runs
+  - **Enhanced Cleanup** - Comprehensive cleanup removes all dropped items, shrine blocks (including skeleton skulls), and mobs after runs end
 - **Currency System** - Added run-specific gold currency system:
   - Chests cost gold to open (starts at 50, scales exponentially by 1.75x per purchase)
   - Mobs drop gold on kill (base: 5, elite: 3x, legendary: 10x)

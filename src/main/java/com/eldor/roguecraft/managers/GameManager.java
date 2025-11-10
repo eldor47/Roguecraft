@@ -24,7 +24,7 @@ public class GameManager {
     private final Map<UUID, BukkitTask> regenTasks; // Regeneration tasks
     private final Map<UUID, BukkitTask> jumpHeightTasks; // Jump height (slow falling) tasks
     private final Map<UUID, BukkitTask> healthDisplayTasks; // Health display for players
-    private final Set<UUID> teamsInWeaponSelection; // Track teams currently in weapon selection phase
+    private final Set<UUID> teamsInWeaponSelection; // Track players currently in weapon selection phase
     private final Map<UUID, Set<LivingEntity>> frozenMobs; // Track frozen mobs per team run
     private final Map<UUID, Long> timeFreezeEndTime; // Track when time freeze ends for each team run (for new spawns)
     private final Map<UUID, WorldBorderSettings> originalBorders; // Store original border settings per team
@@ -132,79 +132,99 @@ public class GameManager {
             player.sendMessage("§bJoined team of " + existingTeam.getPlayerCount() + " players!");
         }
 
-        // Show weapon selection if this is a new team
+        // Show weapon selection for each player individually
         UUID teamId = getTeamRunId(existingTeam);
         final TeamRun finalTeamRun = existingTeam;
         final Arena finalArena = arena;
         
-        if (teamId != null && !runTasks.containsKey(teamId) && !teamsInWeaponSelection.contains(teamId)) {
-            // Mark that we're in weapon selection phase to prevent multiple weapon selections
-            teamsInWeaponSelection.add(teamId);
-            
-            // Open weapon selection GUI for the first player
-            openWeaponSelection(player, weapon -> {
-                // Double-check that run hasn't already started (safety check)
-                if (runTasks.containsKey(teamId)) {
-                    plugin.getLogger().warning("[GameManager] Run already started for team " + teamId + ", ignoring weapon selection callback");
-                    teamsInWeaponSelection.remove(teamId);
-                    return;
-                }
+        // Check if this player already has a weapon
+        Weapon playerWeapon = finalTeamRun.getWeapon(player);
+        
+        if (playerWeapon == null) {
+            // Player needs to select their weapon
+            // Check if they're already in weapon selection
+            if (!teamsInWeaponSelection.contains(player.getUniqueId())) {
+                teamsInWeaponSelection.add(player.getUniqueId());
                 
-                // Check if weapon was already set (another safety check)
-                if (finalTeamRun.getWeapon() != null) {
-                    plugin.getLogger().warning("[GameManager] Weapon already set for team " + teamId + ", ignoring weapon selection callback");
-                    teamsInWeaponSelection.remove(teamId);
-                    return;
-                }
-                
-                // Remove from weapon selection tracking
-                teamsInWeaponSelection.remove(teamId);
-                
-                finalTeamRun.setWeapon(new Weapon(weapon));
-                
-                // Set up world border visualization
-                setupArenaBorder(finalTeamRun, finalArena, teamId);
-                
-                // Remove any existing shrines first (safety check)
-                plugin.getShrineManager().removeShrinesForRun(teamId);
-                
-                // Spawn physical shrines in arena
-                plugin.getShrineManager().spawnShrinesForRun(teamId, finalArena);
-                
-                // Remove any existing chests first (safety check)
-                plugin.getChestManager().removeChestsForRun(teamId);
-                
-                // Spawn gacha chests in arena
-                plugin.getChestManager().spawnChestsForRun(teamId, finalArena);
-                
-                // Start game loop
-                startGameLoop(finalTeamRun, finalArena);
-                
-                // Start aura effects
-                plugin.getAuraManager().startAuras(finalTeamRun);
-                
-                // Start synergy tracking
-                plugin.getSynergyManager().startSynergies(finalTeamRun);
-                
-                // Start auto-attack, XP bars, and apply initial stats for all players
-                for (Player p : finalTeamRun.getPlayers()) {
-                    if (p != null && p.isOnline()) {
-                        plugin.getWeaponManager().startAutoAttack(p, finalTeamRun.getWeapon());
-                        // Initialize XP bar
-                        com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(p, 0, finalTeamRun.getExperienceToNextLevel(), 1, finalTeamRun.getWave(), finalTeamRun.getCurrentGold());
-                        // Apply initial health
-                        applyInitialStats(p, finalTeamRun);
-                        // Start health display
-                        startHealthDisplay(p, finalTeamRun);
+                // Open weapon selection GUI for this player
+                openWeaponSelection(player, weapon -> {
+                    // Remove from weapon selection tracking
+                    teamsInWeaponSelection.remove(player.getUniqueId());
+                    
+                    // Set weapon for this specific player
+                    finalTeamRun.setWeapon(player, new Weapon(weapon));
+                    
+                    // Start auto-attack for this player
+                    plugin.getWeaponManager().startAutoAttack(player, finalTeamRun.getWeapon(player));
+                    
+                    // Initialize XP bar for this player
+                    com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                        player,
+                        finalTeamRun.getExperience(),
+                        finalTeamRun.getExperienceToNextLevel(),
+                        finalTeamRun.getLevel(),
+                        finalTeamRun.getWave(),
+                        finalTeamRun.getCurrentGold()
+                    );
+                    
+                    // Apply initial stats for this player
+                    applyInitialStats(player, finalTeamRun);
+                    
+                    // Start health display for this player
+                    startHealthDisplay(player, finalTeamRun);
+                    
+                    // If this is the first player to select a weapon, start the game loop
+                    if (!runTasks.containsKey(teamId)) {
+                        // Set up world border visualization
+                        setupArenaBorder(finalTeamRun, finalArena, teamId);
+                        
+                        // Remove any existing shrines first (safety check)
+                        plugin.getShrineManager().removeShrinesForRun(teamId);
+                        
+                        // Spawn physical shrines in arena
+                        plugin.getShrineManager().spawnShrinesForRun(teamId, finalArena);
+                        
+                        // Remove any existing chests first (safety check)
+                        plugin.getChestManager().removeChestsForRun(teamId);
+                        
+                        // Spawn gacha chests in arena
+                        plugin.getChestManager().spawnChestsForRun(teamId, finalArena);
+                        
+                        // Start game loop
+                        startGameLoop(finalTeamRun, finalArena);
+                        
+                        // Start aura effects
+                        plugin.getAuraManager().startAuras(finalTeamRun);
+                        
+                        // Start synergy tracking
+                        plugin.getSynergyManager().startSynergies(finalTeamRun);
+                        
+                        // Start mob health display updates
+                        startMobHealthDisplay(finalTeamRun);
+                        
+                        // Initialize XP bars and apply initial stats for all players who already have weapons
+                        for (Player p : finalTeamRun.getPlayers()) {
+                            if (p != null && p.isOnline() && finalTeamRun.getWeapon(p) != null) {
+                                // Initialize XP bar
+                                com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                                    p,
+                                    finalTeamRun.getExperience(),
+                                    finalTeamRun.getExperienceToNextLevel(),
+                                    finalTeamRun.getLevel(),
+                                    finalTeamRun.getWave(),
+                                    finalTeamRun.getCurrentGold()
+                                );
+                                // Apply initial health
+                                applyInitialStats(p, finalTeamRun);
+                                // Start health display
+                                startHealthDisplay(p, finalTeamRun);
+                            }
+                        }
                     }
-                }
-                
-                // Start mob health display updates
-                startMobHealthDisplay(finalTeamRun);
-            });
-        } else if (existingTeam != null && existingTeam.getWeapon() != null) {
-            // Join existing team and start auto-attack
-            plugin.getWeaponManager().startAutoAttack(player, existingTeam.getWeapon());
+                });
+            }
+        } else {
+            // Player already has a weapon, just initialize their display
             // Initialize XP bar for joining player
             com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                 player,
@@ -218,6 +238,11 @@ public class GameManager {
             applyInitialStats(player, existingTeam);
             // Start health display
             startHealthDisplay(player, existingTeam);
+            
+            // Start auto-attack if game loop is already running
+            if (runTasks.containsKey(teamId)) {
+                plugin.getWeaponManager().startAutoAttack(player, playerWeapon);
+            }
         }
 
         return true;
@@ -230,8 +255,8 @@ public class GameManager {
     }
     
     private void applyInitialStats(Player player, TeamRun teamRun) {
-        // Apply initial health
-        double health = teamRun.getStat("health");
+        // Apply initial health (individual per player)
+        double health = teamRun.getStat(player, "health");
         org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
         org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
         if (healthInstance != null) {
@@ -239,8 +264,8 @@ public class GameManager {
             player.setHealth(health);
         }
         
-        // Apply initial speed
-        double speed = teamRun.getStat("speed");
+        // Apply initial speed (individual per player)
+        double speed = teamRun.getStat(player, "speed");
         double baseSpeed = 0.1;
         double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
         org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
@@ -249,8 +274,8 @@ public class GameManager {
             speedInstance.setBaseValue(newSpeed);
         }
         
-        // Apply initial armor (visible in HUD like hearts)
-        double armor = teamRun.getStat("armor");
+        // Apply initial armor (visible in HUD like hearts) (individual per player)
+        double armor = teamRun.getStat(player, "armor");
         org.bukkit.attribute.Attribute armorAttr = org.bukkit.attribute.Attribute.GENERIC_ARMOR;
         org.bukkit.attribute.AttributeInstance armorInstance = player.getAttribute(armorAttr);
         if (armorInstance != null) {
@@ -271,7 +296,8 @@ public class GameManager {
             }
             
             double currentHealth = player.getHealth();
-            double maxHealth = teamRun.getStat("health");
+            // Get player-specific max health
+            double maxHealth = teamRun.getStat(player, "health");
             
             // Build health bar with hearts
             String healthBar = ChatColor.RED + "❤ " + 
@@ -388,10 +414,12 @@ public class GameManager {
                 return;
             }
             
-            double jumpHeight = teamRun.getStat("jump_height");
-            if (jumpHeight > 0) {
-                for (Player player : teamRun.getPlayers()) {
-                    if (player != null && player.isOnline() && !player.isDead()) {
+            // Apply jump height effect per player (each player has their own jump_height stat)
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline() && !player.isDead()) {
+                    // Get player-specific jump_height stat
+                    double jumpHeight = teamRun.getStat(player, "jump_height");
+                    if (jumpHeight > 0) {
                         // Apply slow falling effect based on jump_height
                         // Higher jump_height = higher slow falling level (capped at level 4)
                         int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
@@ -419,10 +447,11 @@ public class GameManager {
                 return;
             }
             
-            double regeneration = teamRun.getStat("regeneration");
-            if (regeneration > 0) {
-                for (Player player : teamRun.getPlayers()) {
-                    if (player != null && player.isOnline() && !player.isDead()) {
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline() && !player.isDead()) {
+                    // Get player-specific regeneration stat
+                    double regeneration = teamRun.getStat(player, "regeneration");
+                    if (regeneration > 0) {
                         UUID playerId = player.getUniqueId();
                         long lastDamage = lastDamageTime.getOrDefault(playerId, 0L);
                         long timeSinceDamage = System.currentTimeMillis() - lastDamage;
@@ -436,7 +465,8 @@ public class GameManager {
                         // Only heal if enough time has passed since last damage
                         if (timeSinceDamage >= procDelayMs) {
                             double currentHealth = player.getHealth();
-                            double maxHealth = teamRun.getStat("health");
+                            // Get player-specific max health
+                            double maxHealth = teamRun.getStat(player, "health");
                             
                             // Heal based on regeneration stat (HP per second)
                             // Cap at 2 hearts (4 HP) per second - fixed value to prevent invincibility
@@ -606,8 +636,17 @@ public class GameManager {
             int playerCount = teamRun.getPlayerCount();
             double multiplayerMultiplier = 1.0 + (playerCount - 1) * 0.2; // 20% per additional player
             
-            // Apply player's difficulty stat (from power-ups)
-            double difficultyStat = teamRun.getStat("difficulty");
+            // Apply difficulty stat (from power-ups) - use maximum difficulty from all players for team-wide mob scaling
+            // Since difficulty affects shared mob scaling, we use the maximum so any player's difficulty increase affects the team
+            double difficultyStat = 1.0;
+            for (Player p : teamRun.getPlayers()) {
+                if (p != null && p.isOnline()) {
+                    double playerDifficulty = teamRun.getStat(p, "difficulty");
+                    if (playerDifficulty > difficultyStat) {
+                        difficultyStat = playerDifficulty;
+                    }
+                }
+            }
             double difficulty = baseDifficulty * multiplayerMultiplier * difficultyStat;
             teamRun.setDifficultyMultiplier(difficulty);
 
@@ -2224,8 +2263,14 @@ public class GameManager {
             jumpHeightTask.cancel();
         }
         
-        // Clean up weapon selection tracking
-        teamsInWeaponSelection.remove(teamId);
+        // Clean up weapon selection tracking (remove all players from this team)
+        if (teamRun != null) {
+            for (UUID playerId : teamRun.getPlayerIds()) {
+                teamsInWeaponSelection.remove(playerId);
+            }
+        } else {
+            teamsInWeaponSelection.remove(teamId);
+        }
         
         // Clean up last damage time tracking for all players in the team
         if (teamRun != null) {
@@ -2378,14 +2423,40 @@ public class GameManager {
             }
         }
         
-        // 4. Remove all spawned mobs in arena
+        // 4. Remove all spawned mobs and plugin entities in arena
         if (arena != null && arena.getCenter() != null) {
             double radius = arena.getRadius();
-            for (org.bukkit.entity.Entity entity : arena.getCenter().getWorld().getNearbyEntities(
-                arena.getCenter(), radius, radius, radius)) {
+            org.bukkit.World world = arena.getCenter().getWorld();
+            int removedMobs = 0;
+            
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(arena.getCenter(), radius, radius, radius)) {
+                if (entity == null || entity.isDead()) continue;
+                
+                // Remove all mobs (except players) - be more aggressive
                 if (entity instanceof LivingEntity && !(entity instanceof Player)) {
-                    entity.remove();
+                    // Remove if it has plugin metadata OR if it's a hostile mob in the arena
+                    boolean shouldRemove = false;
+                    if (entity.hasMetadata("roguecraft_mob") || 
+                        entity.hasMetadata("roguecraft_boss") || 
+                        entity.hasMetadata("roguecraft_elite") ||
+                        entity.hasMetadata("roguecraft_elite_boss") ||
+                        entity.hasMetadata("is_legendary") ||
+                        entity.hasMetadata("is_elite")) {
+                        shouldRemove = true;
+                    } else if (entity instanceof org.bukkit.entity.Monster) {
+                        // Also remove any hostile monsters in the arena (they shouldn't be there)
+                        shouldRemove = true;
+                    }
+                    
+                    if (shouldRemove) {
+                        entity.remove();
+                        removedMobs++;
+                    }
                 }
+            }
+            
+            if (removedMobs > 0) {
+                plugin.getLogger().info("[GameManager] Removed " + removedMobs + " mobs from arena during cleanup");
             }
         }
         
@@ -2419,6 +2490,133 @@ public class GameManager {
         
         // 6b. Remove gacha chests (for both team and solo runs)
         plugin.getChestManager().removeChestsForRun(runId);
+        
+        // 6c. Double-check all shrines are removed and clean up any remaining entities
+        if (arena != null && arena.getCenter() != null) {
+            double radius = arena.getRadius();
+            org.bukkit.World world = arena.getCenter().getWorld();
+            
+            // Remove all plugin-spawned entities in the arena
+            int removedEntities = 0;
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(arena.getCenter(), radius, radius, radius)) {
+                if (entity == null || entity.isDead()) continue;
+                
+                // Remove dropped items (XP tokens, heart items, power-up items)
+                if (entity instanceof org.bukkit.entity.Item) {
+                    org.bukkit.entity.Item item = (org.bukkit.entity.Item) entity;
+                    String customName = item.getCustomName();
+                    if (customName != null && (
+                        customName.startsWith("XP_TOKEN") ||
+                        customName.equals("HEART_ITEM") ||
+                        customName.startsWith("POWERUP_ITEM_"))) {
+                        entity.remove();
+                        removedEntities++;
+                        continue;
+                    }
+                }
+                
+                // Remove XP display ArmorStands
+                if (entity instanceof org.bukkit.entity.ArmorStand && entity.hasMetadata("roguecraft_xp_display")) {
+                    entity.remove();
+                    removedEntities++;
+                    continue;
+                }
+                
+                // Remove ItemFrames (from chest gacha animations)
+                if (entity instanceof org.bukkit.entity.ItemFrame) {
+                    // Check if it's from our plugin (chest gacha animations use fixed/invulnerable ItemFrames)
+                    org.bukkit.entity.ItemFrame frame = (org.bukkit.entity.ItemFrame) entity;
+                    if (frame.isFixed() && frame.isInvulnerable()) {
+                        entity.remove();
+                        removedEntities++;
+                        continue;
+                    }
+                }
+                
+                // Remove any other ArmorStands that might be from our plugin
+                if (entity instanceof org.bukkit.entity.ArmorStand) {
+                    org.bukkit.entity.ArmorStand stand = (org.bukkit.entity.ArmorStand) entity;
+                    // Check if it's invisible and marker (typical of our plugin entities)
+                    if (!stand.isVisible() && stand.isMarker()) {
+                        entity.remove();
+                        removedEntities++;
+                        continue;
+                    }
+                }
+            }
+            
+            if (removedEntities > 0) {
+                plugin.getLogger().info("[GameManager] Removed " + removedEntities + " plugin entities (items, ArmorStands, ItemFrames) from arena during cleanup");
+            }
+            
+            // Double-check shrines are removed by scanning for shrine blocks
+            List<com.eldor.roguecraft.models.Shrine> remainingShrines = plugin.getShrineManager().getShrinesForRun(runId);
+            if (remainingShrines != null && !remainingShrines.isEmpty()) {
+                plugin.getLogger().warning("[GameManager] Found " + remainingShrines.size() + " remaining shrines after cleanup, forcing removal");
+                for (com.eldor.roguecraft.models.Shrine shrine : remainingShrines) {
+                    if (shrine != null) {
+                        try {
+                            shrine.remove();
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("[GameManager] Error removing remaining shrine: " + e.getMessage());
+                        }
+                    }
+                }
+                // Clear the list
+                remainingShrines.clear();
+            }
+            
+            // 6d. Aggressive block cleanup - scan entire arena for any remaining shrine blocks
+            int removedBlocks = 0;
+            org.bukkit.Location center = arena.getCenter();
+            double arenaRadius = arena.getRadius();
+            int centerX = center.getBlockX();
+            int centerY = center.getBlockY();
+            int centerZ = center.getBlockZ();
+            
+            // Scan a larger area to catch any missed blocks
+            int scanRadius = (int) Math.ceil(arenaRadius) + 5; // Add 5 blocks buffer
+            int minY = centerY - 5; // Check below arena
+            int maxY = centerY + 10; // Check above arena
+            
+            for (int x = centerX - scanRadius; x <= centerX + scanRadius; x++) {
+                for (int z = centerZ - scanRadius; z <= centerZ + scanRadius; z++) {
+                    // Check distance from center
+                    double distance = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(z - centerZ, 2));
+                    if (distance > arenaRadius + 10) continue; // Skip if too far
+                    
+                    for (int y = minY; y <= maxY; y++) {
+                        org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                        if (block == null) continue;
+                        
+                        org.bukkit.Material mat = block.getType();
+                        
+                        // Remove shrine-related blocks
+                        if (mat == org.bukkit.Material.SKELETON_SKULL ||
+                            mat == org.bukkit.Material.BLACK_CONCRETE ||
+                            mat == org.bukkit.Material.BLACK_TERRACOTTA ||
+                            mat == org.bukkit.Material.OBSIDIAN ||
+                            mat == org.bukkit.Material.BLACKSTONE ||
+                            mat == org.bukkit.Material.SOUL_TORCH ||
+                            mat == org.bukkit.Material.END_ROD ||
+                            mat == org.bukkit.Material.DARK_OAK_FENCE ||
+                            (mat.name().contains("CONCRETE") && (mat.name().contains("BLACK") || mat.name().contains("GRAY"))) ||
+                            (mat.name().contains("TERRACOTTA") && (mat.name().contains("BLACK") || mat.name().contains("GRAY")))) {
+                            // Ensure chunk is loaded
+                            if (!block.getChunk().isLoaded()) {
+                                block.getChunk().load();
+                            }
+                            block.setType(org.bukkit.Material.AIR);
+                            removedBlocks++;
+                        }
+                    }
+                }
+            }
+            
+            if (removedBlocks > 0) {
+                plugin.getLogger().info("[GameManager] Removed " + removedBlocks + " shrine blocks during aggressive cleanup");
+            }
+        }
         
         // 7. Clear GUI queue for all players in the run
         if (run instanceof TeamRun) {

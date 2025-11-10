@@ -14,8 +14,12 @@ import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityRegainHealthEvent;
 import org.bukkit.event.entity.FoodLevelChangeEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerVelocityEvent;
+
+import java.util.UUID;
 
 public class PlayerListener implements Listener {
     private final RoguecraftPlugin plugin;
@@ -43,10 +47,82 @@ public class PlayerListener implements Listener {
             player.sendMessage("§cYou died! Run ended.");
         }
     }
+    
+    @EventHandler
+    public void onPlayerMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        
+        // Check if player is in a team run
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        if (teamRun != null && teamRun.isActive()) {
+            // If ANY team member is in a GUI, block movement for ALL team members
+            if (teamRun.hasAnyPlayerInGUI()) {
+                // Only cancel if player actually moved (not just rotated)
+                if (event.getFrom().getBlockX() != event.getTo().getBlockX() ||
+                    event.getFrom().getBlockY() != event.getTo().getBlockY() ||
+                    event.getFrom().getBlockZ() != event.getTo().getBlockZ()) {
+                    event.setCancelled(true);
+                    // Teleport player back to prevent any movement
+                    event.setTo(event.getFrom());
+                }
+                return;
+            }
+        }
+        
+        // Also check individual GUI tracking
+        if (plugin.getGuiManager().isPlayerInGUI(player.getUniqueId()) || 
+            plugin.getShrineManager().isPlayerInShrineGUI(player.getUniqueId())) {
+            // Only cancel if player actually moved (not just rotated)
+            if (event.getFrom().getBlockX() != event.getTo().getBlockX() ||
+                event.getFrom().getBlockY() != event.getTo().getBlockY() ||
+                event.getFrom().getBlockZ() != event.getTo().getBlockZ()) {
+                event.setCancelled(true);
+                event.setTo(event.getFrom());
+            }
+        }
+    }
+    
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onPlayerVelocity(PlayerVelocityEvent event) {
+        Player player = event.getPlayer();
+        
+        // Check if player is in a team run
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        if (teamRun != null && teamRun.isActive()) {
+            // Check if player was tagged by a TNT explosion from a team member
+            if (player.hasMetadata("roguecraft_tnt_damaged")) {
+                String ownerUuid = player.getMetadata("roguecraft_tnt_damaged").get(0).asString();
+                UUID ownerId = java.util.UUID.fromString(ownerUuid);
+                
+                // Check if TNT belongs to this player or a team member
+                if (ownerId.equals(player.getUniqueId()) || teamRun.getPlayerIds().contains(ownerId)) {
+                    // Cancel velocity change from team member TNT explosion
+                    event.setCancelled(true);
+                    // Reset velocity to prevent any knockback
+                    player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
+                }
+            }
+        } else {
+            // Solo run - check if TNT belongs to this player
+            if (player.hasMetadata("roguecraft_tnt_damaged")) {
+                String ownerUuid = player.getMetadata("roguecraft_tnt_damaged").get(0).asString();
+                UUID ownerId = java.util.UUID.fromString(ownerUuid);
+                
+                if (ownerId.equals(player.getUniqueId())) {
+                    // Cancel velocity change from own TNT explosion
+                    event.setCancelled(true);
+                    player.setVelocity(new org.bukkit.util.Vector(0, 0, 0));
+                }
+            }
+        }
+    }
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
+        
+        // Clean up team lobby invites/lobbies
+        plugin.getTeamLobbyManager().onPlayerQuit(player);
         
         // Clean up any active shrine channeling/GUI tasks for this player
         plugin.getShrineManager().cleanupPlayerChanneling(player);
@@ -334,13 +410,40 @@ public class PlayerListener implements Listener {
         double armor = 0.0;
         
         if (teamRun != null && teamRun.isActive()) {
-            armor = teamRun.getStat("armor");
+            armor = teamRun.getStat(player, "armor");
         } else {
             run = plugin.getRunManager().getRun(player);
             if (run != null && run.isActive()) {
                 armor = run.getStat("armor");
             } else {
                 return; // Not in a run, don't modify damage
+            }
+        }
+        
+        // Cancel explosion damage from team member TNT
+        if (event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_EXPLOSION) {
+            // Check if player was tagged by a TNT explosion from a team member
+            if (player.hasMetadata("roguecraft_tnt_damaged")) {
+                String ownerUuid = player.getMetadata("roguecraft_tnt_damaged").get(0).asString();
+                UUID ownerId = java.util.UUID.fromString(ownerUuid);
+                
+                // Check if TNT belongs to this player
+                if (ownerId.equals(player.getUniqueId())) {
+                    event.setCancelled(true);
+                    // Remove metadata after cancelling
+                    player.removeMetadata("roguecraft_tnt_damaged", plugin);
+                    return;
+                }
+                
+                // Check if TNT belongs to a team member
+                if (teamRun != null && teamRun.isActive()) {
+                    if (teamRun.getPlayerIds().contains(ownerId)) {
+                        event.setCancelled(true);
+                        // Remove metadata after cancelling
+                        player.removeMetadata("roguecraft_tnt_damaged", plugin);
+                        return;
+                    }
+                }
             }
         }
         
@@ -397,30 +500,51 @@ public class PlayerListener implements Listener {
             }
         }
         
-        // Prevent damage from own TNT explosions
+        // Prevent damage from own TNT explosions or team member TNT
         if (event.getDamager() instanceof org.bukkit.entity.TNTPrimed) {
             org.bukkit.entity.TNTPrimed tnt = (org.bukkit.entity.TNTPrimed) event.getDamager();
             if (tnt.hasMetadata("roguecraft_tnt_owner")) {
                 String ownerUuid = tnt.getMetadata("roguecraft_tnt_owner").get(0).asString();
-                if (ownerUuid.equals(player.getUniqueId().toString())) {
+                UUID ownerId = java.util.UUID.fromString(ownerUuid);
+                
+                // Check if TNT belongs to this player
+                if (ownerId.equals(player.getUniqueId())) {
                     event.setCancelled(true);
                     return;
+                }
+                
+                // Check if TNT belongs to a team member
+                if (teamRun != null && teamRun.isActive()) {
+                    if (teamRun.getPlayerIds().contains(ownerId)) {
+                        event.setCancelled(true);
+                        return;
+                    }
                 }
             }
         }
         
-        // Also check for explosion damage from TNT (EntityExplodeEvent might cause damage)
+        // Also check for explosion damage from TNT (check metadata set by explosion)
         if (event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_EXPLOSION) {
-            // Check if there's a nearby TNT that belongs to this player
-            for (org.bukkit.entity.Entity nearby : player.getNearbyEntities(20, 20, 20)) {
-                if (nearby instanceof org.bukkit.entity.TNTPrimed) {
-                    org.bukkit.entity.TNTPrimed tnt = (org.bukkit.entity.TNTPrimed) nearby;
-                    if (tnt.hasMetadata("roguecraft_tnt_owner")) {
-                        String ownerUuid = tnt.getMetadata("roguecraft_tnt_owner").get(0).asString();
-                        if (ownerUuid.equals(player.getUniqueId().toString())) {
-                            event.setCancelled(true);
-                            return;
-                        }
+            // Check if player was tagged by a TNT explosion from a team member
+            if (player.hasMetadata("roguecraft_tnt_damaged")) {
+                String ownerUuid = player.getMetadata("roguecraft_tnt_damaged").get(0).asString();
+                UUID ownerId = java.util.UUID.fromString(ownerUuid);
+                
+                // Check if TNT belongs to this player
+                if (ownerId.equals(player.getUniqueId())) {
+                    event.setCancelled(true);
+                    // Remove metadata after cancelling
+                    player.removeMetadata("roguecraft_tnt_damaged", plugin);
+                    return;
+                }
+                
+                // Check if TNT belongs to a team member
+                if (teamRun != null && teamRun.isActive()) {
+                    if (teamRun.getPlayerIds().contains(ownerId)) {
+                        event.setCancelled(true);
+                        // Remove metadata after cancelling
+                        player.removeMetadata("roguecraft_tnt_damaged", plugin);
+                        return;
                     }
                 }
             }

@@ -3,6 +3,8 @@ package com.eldor.roguecraft.commands;
 import com.eldor.roguecraft.RoguecraftPlugin;
 import com.eldor.roguecraft.models.Arena;
 import com.eldor.roguecraft.models.Run;
+import com.eldor.roguecraft.models.Weapon;
+import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -49,15 +51,157 @@ public class RoguecraftCommand implements CommandExecutor, TabCompleter {
                 if (plugin.getRunManager().hasActiveRun(player)) {
                     player.sendMessage("§cYou already have an active run!");
                 } else {
-                    Arena arena = null;
-                    if (args.length > 1) {
-                        arena = plugin.getArenaManager().getArena(args[1]);
-                        if (arena == null) {
-                            player.sendMessage("§cArena not found: " + args[1]);
+                    // Check if player is in a team lobby
+                    com.eldor.roguecraft.managers.TeamLobbyManager.TeamLobby lobby = plugin.getTeamLobbyManager().getLobby(player);
+                    if (lobby != null) {
+                        // Team start - check if all ready
+                        if (!lobby.allReady()) {
+                            player.sendMessage("§cNot all players are ready! Use /rc ready to mark yourself as ready.");
+                            lobby.broadcast("§e" + player.getName() + " tried to start, but not all players are ready.");
                             return true;
                         }
+                        
+                        // Start team run with all lobby members
+                        Arena arena = null;
+                        if (args.length > 1) {
+                            arena = plugin.getArenaManager().getArena(args[1]);
+                            if (arena == null) {
+                                player.sendMessage("§cArena not found: " + args[1]);
+                                return true;
+                            }
+                        }
+                        
+                        // Start run for all team members
+                        Player firstPlayer = lobby.getPlayers().get(0);
+                        plugin.getGameManager().startRun(firstPlayer, arena);
+                        
+                        // Add other players to the team
+                        for (Player teamPlayer : lobby.getPlayers()) {
+                            if (teamPlayer != null && teamPlayer.isOnline() && !teamPlayer.getUniqueId().equals(firstPlayer.getUniqueId())) {
+                                // They will join the existing team run
+                                plugin.getGameManager().startRun(teamPlayer, arena);
+                            }
+                        }
+                        
+                        // Remove lobby
+                        plugin.getTeamLobbyManager().removeLobby(lobby);
+                    } else {
+                        // Solo start
+                        Arena arena = null;
+                        if (args.length > 1) {
+                            arena = plugin.getArenaManager().getArena(args[1]);
+                            if (arena == null) {
+                                player.sendMessage("§cArena not found: " + args[1]);
+                                return true;
+                            }
+                        }
+                        plugin.getGameManager().startRun(player, arena);
                     }
-                    plugin.getGameManager().startRun(player, arena);
+                }
+                break;
+            
+            case "invite":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                if (args.length < 2) {
+                    player.sendMessage("§cUsage: /rc invite <player>");
+                    return true;
+                }
+                
+                Player target = Bukkit.getPlayer(args[1]);
+                if (target == null) {
+                    player.sendMessage("§cPlayer not found: " + args[1]);
+                    return true;
+                }
+                
+                // Create lobby if doesn't exist
+                com.eldor.roguecraft.managers.TeamLobbyManager.TeamLobby lobby = plugin.getTeamLobbyManager().getLobby(player);
+                if (lobby == null) {
+                    lobby = plugin.getTeamLobbyManager().createLobby(player);
+                }
+                
+                plugin.getTeamLobbyManager().invitePlayer(player, target);
+                break;
+            
+            case "accept":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                plugin.getTeamLobbyManager().acceptInvite(player);
+                break;
+            
+            case "decline":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                plugin.getTeamLobbyManager().declineInvite(player);
+                break;
+            
+            case "leave":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                plugin.getTeamLobbyManager().leaveLobby(player);
+                break;
+            
+            case "ready":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                plugin.getTeamLobbyManager().toggleReady(player);
+                break;
+            
+            case "team":
+                if (!player.hasPermission("roguecraft.play")) {
+                    player.sendMessage("§cYou don't have permission to use this command!");
+                    return true;
+                }
+                
+                if (args.length < 2) {
+                    // Show team status
+                    lobby = plugin.getTeamLobbyManager().getLobby(player);
+                    if (lobby == null) {
+                        player.sendMessage("§cYou're not in a team! Use /rc invite <player> to create a team.");
+                    } else {
+                        player.sendMessage("§6=== Team Status ===");
+                        player.sendMessage("§bLeader: §f" + lobby.getLeader().getName());
+                        player.sendMessage("§bMembers (" + lobby.getPlayerCount() + "/4):");
+                        for (Player p : lobby.getPlayers()) {
+                            if (p != null && p.isOnline()) {
+                                String readyStatus = lobby.isReady(p) ? "§a✓ Ready" : "§c✗ Not Ready";
+                                player.sendMessage("§7  - §f" + p.getName() + " " + readyStatus);
+                            }
+                        }
+                        if (lobby.allReady()) {
+                            player.sendMessage("§aAll players are ready! Use /rc start to begin.");
+                        } else {
+                            player.sendMessage("§eUse /rc ready to mark yourself as ready.");
+                        }
+                    }
+                    return true;
+                }
+                
+                switch (args[1].toLowerCase()) {
+                    case "create":
+                        plugin.getTeamLobbyManager().createLobby(player);
+                        break;
+                    case "leave":
+                        plugin.getTeamLobbyManager().leaveLobby(player);
+                        break;
+                    default:
+                        player.sendMessage("§cUsage: /rc team [create|leave]");
+                        break;
                 }
                 break;
 
@@ -160,9 +304,10 @@ public class RoguecraftCommand implements CommandExecutor, TabCompleter {
         player.sendMessage("§eDifficulty: §f" + String.format("%.2f", teamRun.getDifficultyMultiplier()));
         player.sendMessage("§ePower-Ups: §f" + teamRun.getCollectedPowerUps().size());
         
-        // Display weapon info
-        if (teamRun.getWeapon() != null) {
-            player.sendMessage("§eWeapon: §f" + teamRun.getWeapon().getType().getDisplayName() + " §7(Level " + teamRun.getWeapon().getLevel() + ")");
+        // Display weapon info (player-specific)
+        Weapon playerWeapon = teamRun.getWeapon(player);
+        if (playerWeapon != null) {
+            player.sendMessage("§eWeapon: §f" + playerWeapon.getType().getDisplayName() + " §7(Level " + playerWeapon.getLevel() + ")");
         }
         
         // Display team members
@@ -179,14 +324,26 @@ public class RoguecraftCommand implements CommandExecutor, TabCompleter {
         List<String> completions = new ArrayList<>();
 
         if (args.length == 1) {
-            completions.addAll(Arrays.asList("start", "stop", "stats", "gui"));
+            completions.addAll(Arrays.asList("start", "stop", "stats", "gui", "invite", "accept", "decline", "leave", "ready", "team"));
             if (sender.hasPermission("roguecraft.admin.reload")) {
                 completions.add("reload");
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("start")) {
-            // Suggest arena names
-            for (Arena arena : plugin.getArenaManager().getAllArenas()) {
-                completions.add(arena.getId());
+        } else if (args.length == 2) {
+            if (args[0].equalsIgnoreCase("start")) {
+                // Suggest arena names
+                for (Arena arena : plugin.getArenaManager().getAllArenas()) {
+                    completions.add(arena.getId());
+                }
+            } else if (args[0].equalsIgnoreCase("invite")) {
+                // Suggest online player names
+                for (Player p : org.bukkit.Bukkit.getOnlinePlayers()) {
+                    if (p != sender) { // Don't suggest self
+                        completions.add(p.getName());
+                    }
+                }
+            } else if (args[0].equalsIgnoreCase("team")) {
+                // Suggest team subcommands
+                completions.addAll(Arrays.asList("create", "leave"));
             }
         }
 

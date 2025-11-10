@@ -150,15 +150,18 @@ public class ChestListener implements Listener {
             // But keep this for backwards compatibility
         }
         
-        // Get player's luck stat
+        // For team runs, use average luck of all players (or first player's luck for consistency)
+        // For solo runs, use player's luck
         double luck = 1.0;
         if (teamRun != null) {
-            luck = teamRun.getStat("luck");
+            // Use first player's luck for consistency (all players get same roll)
+            // Could also use average, but using first player's is simpler
+            luck = teamRun.getStat(player, "luck");
         } else if (run != null) {
             luck = run.getStat("luck");
         }
         
-        // Perform gacha roll with luck stat
+        // Perform gacha roll with luck stat (same roll for all team members)
         GachaItem item = plugin.getGachaManager().roll(luck);
         
         // Mark chest as opened
@@ -167,19 +170,32 @@ public class ChestListener implements Listener {
         // Remove chest immediately (before opening GUI)
         chest.remove();
         
-        // Open gacha roll GUI (this will freeze the game)
+        // Open gacha roll GUI for all team members (same roll for everyone)
         if (teamRun != null) {
-            plugin.getGuiManager().openGachaRollGUI(player, item, luck, teamRun);
+            // Open GUI for all team members with the same item
+            for (Player teamPlayer : teamRun.getPlayers()) {
+                if (teamPlayer != null && teamPlayer.isOnline()) {
+                    plugin.getGuiManager().openGachaRollGUI(teamPlayer, item, luck, teamRun);
+                }
+            }
         } else if (run != null) {
             plugin.getGuiManager().openGachaRollGUI(player, item, luck, run);
         }
         
-        // Apply item effect after a short delay (to ensure GUI is open)
-        // We'll apply it when GUI closes, but store it for now
+        // Apply item effect to all team members after a short delay
         final GachaItem finalItem = item;
         org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            // Apply item effect
-            applyItemEffect(player, finalItem, teamRun, run);
+            if (teamRun != null) {
+                // Apply item effect to all team members
+                for (Player teamPlayer : teamRun.getPlayers()) {
+                    if (teamPlayer != null && teamPlayer.isOnline()) {
+                        applyItemEffect(teamPlayer, finalItem, teamRun, null);
+                    }
+                }
+            } else if (run != null) {
+                // Solo run - apply to single player
+                applyItemEffect(player, finalItem, null, run);
+            }
         }, 5L); // Small delay to ensure GUI is open
     }
     
@@ -218,61 +234,72 @@ public class ChestListener implements Listener {
     }
     
     /**
-     * Apply stat boost from item
+     * Apply stat boost from item (shared for team runs - all players get the boost)
      */
     private void applyStatBoost(Player player, GachaItem item, Object run) {
         String itemId = item.getId();
         double value = item.getValue();
         
+        // For team runs, apply stat boost to all players
+        // For solo runs, apply to single player
+        if (run instanceof TeamRun) {
+            TeamRun tr = (TeamRun) run;
+            // Apply to all team members
+            for (Player teamPlayer : tr.getPlayers()) {
+                if (teamPlayer != null && teamPlayer.isOnline()) {
+                    applyStatBoostToPlayer(teamPlayer, item, tr, itemId, value);
+                }
+            }
+        } else if (run instanceof Run) {
+            applyStatBoostToPlayer(player, item, run, itemId, value);
+        }
+    }
+    
+    /**
+     * Apply stat boost to a single player
+     */
+    private void applyStatBoostToPlayer(Player targetPlayer, GachaItem item, Object run, String itemId, double value) {
         // Determine which stat to boost based on item ID
         if (itemId.contains("clover") || itemId.contains("luck")) {
-            addStat(run, "luck", value);
+            addStat(targetPlayer, run, "luck", value);
         } else if (itemId.contains("time_bracelet") || itemId.contains("xp")) {
-            addStat(run, "xp_multiplier", value);
+            addStat(targetPlayer, run, "xp_multiplier", value);
         } else if (itemId.contains("gym_sauce") || itemId.contains("damage")) {
-            addStat(run, "damage", value);
+            addStat(targetPlayer, run, "damage", value);
         } else if (itemId.contains("oats") || itemId.contains("hp") || itemId.contains("health")) {
-            addStat(run, "health", value);
+            addStat(targetPlayer, run, "health", value);
             // Apply health immediately via attributes
             if (run instanceof TeamRun) {
                 TeamRun tr = (TeamRun) run;
-                for (Player p : tr.getPlayers()) {
-                    if (p != null && p.isOnline()) {
-                        double health = tr.getStat("health");
-                        org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
-                        org.bukkit.attribute.AttributeInstance healthInstance = p.getAttribute(healthAttr);
-                        if (healthInstance != null) {
-                            healthInstance.setBaseValue(health);
-                            p.setHealth(Math.min(health, p.getHealth()));
-                        }
-                    }
+                double health = tr.getStat(targetPlayer, "health");
+                org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
+                org.bukkit.attribute.AttributeInstance healthInstance = targetPlayer.getAttribute(healthAttr);
+                if (healthInstance != null) {
+                    healthInstance.setBaseValue(health);
+                    targetPlayer.setHealth(Math.min(health, targetPlayer.getHealth()));
                 }
             } else if (run instanceof Run) {
                 Run r = (Run) run;
                 double health = r.getStat("health");
                 org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
-                org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
+                org.bukkit.attribute.AttributeInstance healthInstance = targetPlayer.getAttribute(healthAttr);
                 if (healthInstance != null) {
                     healthInstance.setBaseValue(health);
-                    player.setHealth(Math.min(health, player.getHealth()));
+                    targetPlayer.setHealth(Math.min(health, targetPlayer.getHealth()));
                 }
             }
         } else if (itemId.contains("turbo_socks") || itemId.contains("speed")) {
-            addStat(run, "speed", value);
+            addStat(targetPlayer, run, "speed", value);
             // Apply speed immediately via attributes
             if (run instanceof TeamRun) {
                 TeamRun tr = (TeamRun) run;
-                for (Player p : tr.getPlayers()) {
-                    if (p != null && p.isOnline()) {
-                        double speed = tr.getStat("speed");
-                        double baseSpeed = 0.1;
-                        double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
-                        org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
-                        org.bukkit.attribute.AttributeInstance speedInstance = p.getAttribute(speedAttr);
-                        if (speedInstance != null) {
-                            speedInstance.setBaseValue(newSpeed);
-                        }
-                    }
+                double speed = tr.getStat(targetPlayer, "speed");
+                double baseSpeed = 0.1;
+                double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
+                org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
+                org.bukkit.attribute.AttributeInstance speedInstance = targetPlayer.getAttribute(speedAttr);
+                if (speedInstance != null) {
+                    speedInstance.setBaseValue(newSpeed);
                 }
             } else if (run instanceof Run) {
                 Run r = (Run) run;
@@ -280,43 +307,61 @@ public class ChestListener implements Listener {
                 double baseSpeed = 0.1;
                 double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
                 org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
-                org.bukkit.attribute.AttributeInstance speedInstance = player.getAttribute(speedAttr);
+                org.bukkit.attribute.AttributeInstance speedInstance = targetPlayer.getAttribute(speedAttr);
                 if (speedInstance != null) {
                     speedInstance.setBaseValue(newSpeed);
                 }
             }
         } else if (itemId.contains("battery") || itemId.contains("attack_speed")) {
             // Attack speed affects weapon - store with consistent key
-            player.setMetadata("gacha_attack_speed_battery", 
+            targetPlayer.setMetadata("gacha_attack_speed_battery", 
                 new org.bukkit.metadata.FixedMetadataValue(plugin, value));
         } else if (itemId.contains("forbidden_juice") || itemId.contains("crit")) {
-            addStat(run, "crit_chance", value);
+            addStat(targetPlayer, run, "crit_chance", value);
         }
     }
     
     /**
-     * Apply passive effect from item
+     * Apply passive effect from item (shared for team runs - all players get the effect)
      */
     private void applyPassiveEffect(Player player, GachaItem item, Object run) {
         String itemId = item.getId();
         double value = item.getValue();
         
-        if (itemId.contains("medkit") || itemId.contains("regen")) {
-            addStat(run, "regeneration", value);
-        } else if (itemId.contains("golden_glove")) {
-            // Store for currency multiplier (to be implemented)
-            player.setMetadata("gacha_gold_multiplier", 
-                new org.bukkit.metadata.FixedMetadataValue(plugin, value));
+        // For team runs, apply to all players
+        // For solo runs, apply to single player
+        if (run instanceof TeamRun) {
+            TeamRun tr = (TeamRun) run;
+            for (Player teamPlayer : tr.getPlayers()) {
+                if (teamPlayer != null && teamPlayer.isOnline()) {
+                    if (itemId.contains("medkit") || itemId.contains("regen")) {
+                        addStat(teamPlayer, run, "regeneration", value);
+                    } else if (itemId.contains("golden_glove")) {
+                        // Store for currency multiplier (shared for team)
+                        teamPlayer.setMetadata("gacha_gold_multiplier", 
+                            new org.bukkit.metadata.FixedMetadataValue(plugin, value));
+                    }
+                }
+            }
+        } else if (run instanceof Run) {
+            if (itemId.contains("medkit") || itemId.contains("regen")) {
+                addStat(player, run, "regeneration", value);
+            } else if (itemId.contains("golden_glove")) {
+                // Store for currency multiplier
+                player.setMetadata("gacha_gold_multiplier", 
+                    new org.bukkit.metadata.FixedMetadataValue(plugin, value));
+            }
         }
     }
     
     /**
-     * Helper to add stat value
+     * Helper to add stat value (player-specific for TeamRun)
      */
-    private void addStat(Object run, String statKey, double value) {
+    private void addStat(Player player, Object run, String statKey, double value) {
         if (run instanceof TeamRun) {
             TeamRun tr = (TeamRun) run;
-            tr.addStat(statKey, value);
+            // Use player-specific stat for TeamRun
+            tr.addStat(player, statKey, value);
         } else if (run instanceof Run) {
             Run r = (Run) run;
             r.addStat(statKey, value);
@@ -499,15 +544,23 @@ public class ChestListener implements Listener {
                     0.05
                 );
                 
-                // Track collected item
+                // Track collected item (shared for team runs - all players get the same item)
                 if (teamRun != null) {
-                    teamRun.addGachaItem(finalItem);
+                    // Add item to all team members
+                    for (Player teamPlayer : teamRun.getPlayers()) {
+                        if (teamPlayer != null && teamPlayer.isOnline()) {
+                            teamRun.addGachaItem(teamPlayer, finalItem);
+                        }
+                    }
                 } else if (run != null) {
                     run.addGachaItem(finalItem);
                 }
                 
-                // Apply item effect
-                applyItemEffect(player, finalItem, teamRun, run);
+                // Item effect is already applied in ChestListener.onChestClick for team runs
+                // Only apply for solo runs here
+                if (run != null) {
+                    applyItemEffect(player, finalItem, null, run);
+                }
                 
                 // Send final message
                 String message = rarityColor + "✨ " + ChatColor.BOLD + finalItem.getName() + ChatColor.RESET + " " + rarityColor + "✨";
@@ -586,15 +639,23 @@ public class ChestListener implements Listener {
                             0.05
                         );
                         
-                        // Track collected item
+                        // Track collected item (shared for team runs - all players get the same item)
                         if (teamRun != null) {
-                            teamRun.addGachaItem(finalItem);
+                            // Add item to all team members
+                            for (Player teamPlayer : teamRun.getPlayers()) {
+                                if (teamPlayer != null && teamPlayer.isOnline()) {
+                                    teamRun.addGachaItem(teamPlayer, finalItem);
+                                }
+                            }
                         } else if (run != null) {
                             run.addGachaItem(finalItem);
                         }
                         
-                        // Apply item effect
-                        applyItemEffect(player, finalItem, teamRun, run);
+                        // Item effect is already applied in ChestListener.onChestClick for team runs
+                        // Only apply for solo runs here
+                        if (run != null) {
+                            applyItemEffect(player, finalItem, null, run);
+                        }
                         
                         // Send final message
                         player.sendMessage("");
