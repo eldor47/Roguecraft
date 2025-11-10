@@ -10,6 +10,7 @@ import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Sound;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
@@ -17,12 +18,13 @@ import org.bukkit.scheduler.BukkitTask;
 import java.util.*;
 
 public class GameManager {
-    private static final long TEAM_POWERUP_TIMEOUT_MS = 15000L;
     private final RoguecraftPlugin plugin;
     private final Map<UUID, BukkitTask> runTasks;
     private final Map<UUID, BukkitTask> spawnTasks;
     private final Map<UUID, BukkitTask> regenTasks; // Regeneration tasks
+    private final Map<UUID, BukkitTask> jumpHeightTasks; // Jump height (slow falling) tasks
     private final Map<UUID, BukkitTask> healthDisplayTasks; // Health display for players
+    private final Set<UUID> teamsInWeaponSelection; // Track teams currently in weapon selection phase
     private final Map<UUID, Set<LivingEntity>> frozenMobs; // Track frozen mobs per team run
     private final Map<UUID, Long> timeFreezeEndTime; // Track when time freeze ends for each team run (for new spawns)
     private final Map<UUID, WorldBorderSettings> originalBorders; // Store original border settings per team
@@ -35,7 +37,9 @@ public class GameManager {
         this.runTasks = new HashMap<>();
         this.spawnTasks = new HashMap<>();
         this.regenTasks = new HashMap<>();
+        this.jumpHeightTasks = new HashMap<>();
         this.healthDisplayTasks = new HashMap<>();
+        this.teamsInWeaponSelection = new HashSet<>();
         this.frozenMobs = new HashMap<>();
         this.timeFreezeEndTime = new HashMap<>();
         this.originalBorders = new HashMap<>();
@@ -133,16 +137,45 @@ public class GameManager {
         final TeamRun finalTeamRun = existingTeam;
         final Arena finalArena = arena;
         
-        if (teamId != null && !runTasks.containsKey(teamId)) {
+        if (teamId != null && !runTasks.containsKey(teamId) && !teamsInWeaponSelection.contains(teamId)) {
+            // Mark that we're in weapon selection phase to prevent multiple weapon selections
+            teamsInWeaponSelection.add(teamId);
+            
             // Open weapon selection GUI for the first player
             openWeaponSelection(player, weapon -> {
+                // Double-check that run hasn't already started (safety check)
+                if (runTasks.containsKey(teamId)) {
+                    plugin.getLogger().warning("[GameManager] Run already started for team " + teamId + ", ignoring weapon selection callback");
+                    teamsInWeaponSelection.remove(teamId);
+                    return;
+                }
+                
+                // Check if weapon was already set (another safety check)
+                if (finalTeamRun.getWeapon() != null) {
+                    plugin.getLogger().warning("[GameManager] Weapon already set for team " + teamId + ", ignoring weapon selection callback");
+                    teamsInWeaponSelection.remove(teamId);
+                    return;
+                }
+                
+                // Remove from weapon selection tracking
+                teamsInWeaponSelection.remove(teamId);
+                
                 finalTeamRun.setWeapon(new Weapon(weapon));
                 
                 // Set up world border visualization
                 setupArenaBorder(finalTeamRun, finalArena, teamId);
                 
+                // Remove any existing shrines first (safety check)
+                plugin.getShrineManager().removeShrinesForRun(teamId);
+                
                 // Spawn physical shrines in arena
                 plugin.getShrineManager().spawnShrinesForRun(teamId, finalArena);
+                
+                // Remove any existing chests first (safety check)
+                plugin.getChestManager().removeChestsForRun(teamId);
+                
+                // Spawn gacha chests in arena
+                plugin.getChestManager().spawnChestsForRun(teamId, finalArena);
                 
                 // Start game loop
                 startGameLoop(finalTeamRun, finalArena);
@@ -158,7 +191,7 @@ public class GameManager {
                     if (p != null && p.isOnline()) {
                         plugin.getWeaponManager().startAutoAttack(p, finalTeamRun.getWeapon());
                         // Initialize XP bar
-                        com.eldor.roguecraft.util.XPBar.updateXPBar(p, 0, finalTeamRun.getExperienceToNextLevel(), 1, finalTeamRun.getWave());
+                        com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(p, 0, finalTeamRun.getExperienceToNextLevel(), 1, finalTeamRun.getWave(), finalTeamRun.getCurrentGold());
                         // Apply initial health
                         applyInitialStats(p, finalTeamRun);
                         // Start health display
@@ -173,12 +206,13 @@ public class GameManager {
             // Join existing team and start auto-attack
             plugin.getWeaponManager().startAutoAttack(player, existingTeam.getWeapon());
             // Initialize XP bar for joining player
-            com.eldor.roguecraft.util.XPBar.updateXPBar(
+            com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                 player,
                 existingTeam.getExperience(),
                 existingTeam.getExperienceToNextLevel(),
                 existingTeam.getLevel(),
-                existingTeam.getWave()
+                existingTeam.getWave(),
+                existingTeam.getCurrentGold()
             );
             // Apply initial health
             applyInitialStats(player, existingTeam);
@@ -348,6 +382,34 @@ public class GameManager {
     private void startGameLoop(TeamRun teamRun, Arena arena) {
         UUID teamId = getTeamRunId(teamRun);
 
+        // Jump height task - applies slow falling effect based on jump_height stat
+        BukkitTask jumpHeightTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) {
+                return;
+            }
+            
+            double jumpHeight = teamRun.getStat("jump_height");
+            if (jumpHeight > 0) {
+                for (Player player : teamRun.getPlayers()) {
+                    if (player != null && player.isOnline() && !player.isDead()) {
+                        // Apply slow falling effect based on jump_height
+                        // Higher jump_height = higher slow falling level (capped at level 4)
+                        int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
+                        if (slowFallingLevel > 0) {
+                            // Apply slow falling effect (infinite duration, refreshed every tick)
+                            player.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                                org.bukkit.potion.PotionEffectType.SLOW_FALLING, 
+                                100, // 5 seconds duration (refreshed every tick)
+                                slowFallingLevel - 1, // Level 0-3 (slow falling levels are 0-indexed)
+                                false, // No ambient particles
+                                false  // No icon
+                            ));
+                        }
+                    }
+                }
+            }
+        }, 0L, 1L); // Run every tick
+        
         // Regeneration task - applies regeneration stat to all players with proc system
         // Use a counter to track visual feedback timing
         final java.util.Map<UUID, Integer> regenTickCounters = new java.util.HashMap<>();
@@ -419,23 +481,19 @@ public class GameManager {
             // Get max wave from config
             int maxWave = plugin.getConfigManager().getBalanceConfig().getInt("waves.max-wave", 20);
 
-            // Handle players lingering in the power-up GUI (team runs)
+            // Handle players in the power-up GUI (team runs)
+            // No timeout - players can keep GUI open as long as they want
             if (teamRun.hasAnyPlayerInGUI()) {
-                long now = System.currentTimeMillis();
+                // Check if any players are still online and in GUI
                 for (UUID guiPlayerId : new HashSet<>(teamRun.getPlayersInGUI())) {
-                    long openedAt = teamRun.getGuiOpenTimestamp(guiPlayerId);
-                    if (openedAt > 0 && now - openedAt >= TEAM_POWERUP_TIMEOUT_MS) {
-                        Player guiPlayer = Bukkit.getPlayer(guiPlayerId);
-                        if (guiPlayer != null && guiPlayer.isOnline()) {
-                            guiPlayer.sendMessage(ChatColor.YELLOW + "Power-up selection timed out, closing menu.");
-                            guiPlayer.closeInventory();
-                        } else {
-                            teamRun.setPlayerInGUI(guiPlayerId, false);
-                        }
+                    Player guiPlayer = Bukkit.getPlayer(guiPlayerId);
+                    if (guiPlayer == null || !guiPlayer.isOnline()) {
+                        // Player disconnected, remove from GUI tracking
+                        teamRun.setPlayerInGUI(guiPlayerId, false);
                     }
                 }
                 if (teamRun.hasAnyPlayerInGUI()) {
-                    return; // Still waiting on selections this tick
+                    return; // Still waiting on selections - pause game loop
                 }
             }
 
@@ -460,6 +518,22 @@ public class GameManager {
                         if (lastBossWave == null || lastBossWave != expectedWave) {
                             spawnWitherBoss(teamRun, arena);
                             bossSpawnedWave.put(teamId, expectedWave);
+                            
+                            // Spawn additional bosses for each clicked boss shrine
+                            Set<UUID> clickedBossShrines = teamRun.getClickedBossShrines();
+                            if (clickedBossShrines != null && !clickedBossShrines.isEmpty()) {
+                                for (UUID shrineId : clickedBossShrines) {
+                                    spawnWitherBoss(teamRun, arena);
+                                    
+                                    // Notify all players
+                                    for (Player p : teamRun.getPlayers()) {
+                                        if (p != null && p.isOnline()) {
+                                            p.sendMessage(ChatColor.DARK_RED + "" + ChatColor.BOLD + "☠ ADDITIONAL WITHER BOSS SPAWNED! ☠");
+                                            p.playSound(p.getLocation(), Sound.ENTITY_WITHER_SPAWN, 1.0f, 0.7f);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 } else if (expectedWave > maxWave && teamRun.getWave() == maxWave) {
@@ -549,6 +623,7 @@ public class GameManager {
 
         runTasks.put(teamId, gameTask);
         regenTasks.put(teamId, regenTask);
+        jumpHeightTasks.put(teamId, jumpHeightTask);
 
         // Spawn task
         startSpawnTask(teamRun, arena);
@@ -745,9 +820,9 @@ public class GameManager {
                     if (entity instanceof LivingEntity) {
                         LivingEntity mob = (LivingEntity) entity;
                         
-                        // Check if time freeze is active and freeze new spawns
+                        // Check if time freeze is active OR if any player is in GUI - freeze new spawns
                         UUID teamId = getTeamRunId(teamRun);
-                        if (isTimeFreezeActive(teamId)) {
+                        if (isTimeFreezeActive(teamId) || teamRun.hasAnyPlayerInGUI()) {
                             mob.setAI(false); // Freeze immediately
                             Set<LivingEntity> frozen = frozenMobs.getOrDefault(teamId, new HashSet<>());
                             frozen.add(mob);
@@ -770,7 +845,19 @@ public class GameManager {
                         double hpMultiplier = plugin.getDifficultyManager().getMobHealthMultiplier(teamRun.getDifficultyMultiplier());
                         hpMultiplier *= (1.0 + (playerCount - 1) * 0.3); // 30% HP per additional player
                         // Add wave-based scaling (enemies get tankier each wave)
-                        double waveMultiplier = 1.0 + (teamRun.getWave() * 0.15); // 15% per wave
+                        // Slower scaling for early waves (waves 1-5: 5% per wave, waves 6-10: 10% per wave, 11+: 15% per wave)
+                        int wave = teamRun.getWave();
+                        double waveMultiplier;
+                        if (wave <= 5) {
+                            // First 5 waves: 5% per wave (much slower)
+                            waveMultiplier = 1.0 + (wave * 0.05);
+                        } else if (wave <= 10) {
+                            // Waves 6-10: 10% per wave (moderate)
+                            waveMultiplier = 1.0 + (5 * 0.05) + ((wave - 5) * 0.10); // 1.25 base from first 5 waves
+                        } else {
+                            // Waves 11+: 15% per wave (normal scaling)
+                            waveMultiplier = 1.0 + (5 * 0.05) + (5 * 0.10) + ((wave - 10) * 0.15); // 1.75 base from first 10 waves
+                        }
                         hpMultiplier *= waveMultiplier;
                         
                         // Apply elite bonuses (reduced HP multiplier to balance with armor)
@@ -861,7 +948,115 @@ public class GameManager {
         }
     }
     
-    private void spawnWitherBoss(TeamRun teamRun, Arena arena) {
+    /**
+     * Spawn Wither boss for solo run (used by boss shrine)
+     */
+    public void spawnWitherBossForSoloRun(Run run, Arena arena) {
+        if (arena.getCenter() == null) return;
+        
+        // Spawn Wither at arena center (or slightly offset)
+        Location spawnLoc = arena.getCenter().clone();
+        if (spawnLoc.getWorld() == null) return;
+        
+        // Find safe Y position (Wither needs space above)
+        org.bukkit.World world = spawnLoc.getWorld();
+        org.bukkit.block.Block block = world.getBlockAt(spawnLoc);
+        while (block.getType().isSolid() && spawnLoc.getY() < world.getMaxHeight()) {
+            spawnLoc.add(0, 1, 0);
+            block = world.getBlockAt(spawnLoc);
+        }
+        // Ensure we're on solid ground
+        while (!block.getType().isSolid() && spawnLoc.getY() > world.getMinHeight()) {
+            spawnLoc.subtract(0, 1, 0);
+            block = world.getBlockAt(spawnLoc);
+        }
+        spawnLoc.add(0, 2, 0); // Spawn 2 blocks above ground (Wither needs space)
+        
+        // Mark location BEFORE spawning so WorldGuardListener can detect it
+        addSpawnLocation(spawnLoc);
+        
+        try {
+            org.bukkit.entity.Entity entity = spawnLoc.getWorld().spawnEntity(spawnLoc, org.bukkit.entity.EntityType.WITHER);
+            
+            if (entity instanceof org.bukkit.entity.LivingEntity) {
+                org.bukkit.entity.LivingEntity wither = (org.bukkit.entity.LivingEntity) entity;
+                
+                // Mark as plugin-spawned and boss
+                wither.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_boss", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                wither.setMetadata("roguecraft_elite_boss", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+                
+                // Calculate scaled health based on level and difficulty
+                int playerLevel = run.getLevel();
+                double difficulty = run.getDifficultyMultiplier();
+                
+                // Base health: 600 HP
+                double baseHealth = 600.0;
+                
+                // Scale with level (25 HP per level)
+                double levelHealth = baseHealth + (playerLevel * 25.0);
+                
+                // Scale with difficulty (0.3 multiplier)
+                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.3);
+                
+                // Solo run - no multiplayer scaling
+                double multiplayerHealth = difficultyHealth;
+                
+                // Apply wave-based scaling
+                int wave = run.getWave();
+                double waveMultiplier;
+                if (wave <= 5) {
+                    waveMultiplier = 1.0 + (wave * 0.05);
+                } else if (wave <= 10) {
+                    waveMultiplier = 1.0 + (5 * 0.05) + ((wave - 5) * 0.10);
+                } else {
+                    waveMultiplier = 1.0 + (5 * 0.05) + (5 * 0.10) + ((wave - 10) * 0.15);
+                }
+                double waveHealth = multiplayerHealth * waveMultiplier;
+                
+                // Cap health at Minecraft's maximum (2048.0)
+                double finalHealth = Math.min(2048.0, waveHealth);
+                
+                wither.setMaxHealth(finalHealth);
+                wither.setHealth(finalHealth);
+                
+                // Apply elite boss scaling
+                applyEliteBossScaling(wither);
+                
+                // Set custom name
+                wither.setCustomName(org.bukkit.ChatColor.DARK_RED + "" + org.bukkit.ChatColor.BOLD + "☠ BOSS: WITHER ☠");
+                wither.setCustomNameVisible(true);
+                
+                // Update health display
+                updateMobHealthDisplay(wither);
+                
+                // Make Wither target player
+                Player player = run.getPlayer();
+                if (player != null && player.isOnline() && !player.isDead()) {
+                    double dist = player.getLocation().distance(wither.getLocation());
+                    if (dist < 100) {
+                        if (wither instanceof org.bukkit.entity.Mob) {
+                            ((org.bukkit.entity.Mob) wither).setTarget(player);
+                        } else if (wither instanceof org.bukkit.entity.Wither) {
+                            ((org.bukkit.entity.Wither) wither).setTarget(player);
+                        }
+                    }
+                }
+                
+                // Start red particle effect task (create a wrapper for solo runs)
+                startBossParticleEffectForSolo(wither, run);
+                
+                // Start boss targeting task
+                startBossTargetingTaskForSolo(wither, run);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to spawn Wither boss for solo run: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    public void spawnWitherBoss(TeamRun teamRun, Arena arena) {
         if (arena.getCenter() == null) return;
         
         // Spawn Wither at arena center (or slightly offset)
@@ -905,17 +1100,29 @@ public class GameManager {
                 // Base health: 600 HP (Wither's default is 600)
                 double baseHealth = 600.0;
                 
-                // Scale with level (50 HP per level)
-                double levelHealth = baseHealth + (playerLevel * 50.0);
+                // Scale with level (reduced from 50 to 25 HP per level)
+                double levelHealth = baseHealth + (playerLevel * 25.0);
                 
-                // Scale with difficulty (difficulty multiplier)
-                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.5);
+                // Scale with difficulty (reduced from 0.5 to 0.3 multiplier)
+                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.3);
                 
-                // Scale with player count (20% per additional player)
-                double multiplayerHealth = difficultyHealth * (1.0 + (playerCount - 1) * 0.2);
+                // Scale with player count (reduced from 20% to 15% per additional player)
+                double multiplayerHealth = difficultyHealth * (1.0 + (playerCount - 1) * 0.15);
                 
-                // Apply wave-based scaling (15% per wave, wave 20 = +300%)
-                double waveHealth = multiplayerHealth * (1.0 + (teamRun.getWave() * 0.15));
+                // Apply wave-based scaling (slower for early waves, same as regular mobs)
+                int wave = teamRun.getWave();
+                double waveMultiplier;
+                if (wave <= 5) {
+                    // First 5 waves: 5% per wave
+                    waveMultiplier = 1.0 + (wave * 0.05);
+                } else if (wave <= 10) {
+                    // Waves 6-10: 10% per wave
+                    waveMultiplier = 1.0 + (5 * 0.05) + ((wave - 5) * 0.10);
+                } else {
+                    // Waves 11+: 15% per wave
+                    waveMultiplier = 1.0 + (5 * 0.05) + (5 * 0.10) + ((wave - 10) * 0.15);
+                }
+                double waveHealth = multiplayerHealth * waveMultiplier;
                 
                 // Cap health at Minecraft's maximum (2048.0)
                 double finalHealth = Math.min(2048.0, waveHealth);
@@ -1151,6 +1358,77 @@ public class GameManager {
                             ((org.bukkit.entity.Mob) boss).setTarget(nearestPlayer);
                         } else if (boss instanceof org.bukkit.entity.Wither) {
                             ((org.bukkit.entity.Wither) boss).setTarget(nearestPlayer);
+                        }
+                    }
+                }
+            }
+        }, 0L, 40L); // Every 2 seconds (40 ticks)
+        
+        // Store task ID for cleanup
+        boss.setMetadata("boss_targeting_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+    
+    /**
+     * Start boss particle effect for solo run
+     */
+    private void startBossParticleEffectForSolo(LivingEntity boss, Run run) {
+        if (boss == null || boss.isDead()) return;
+        
+        // Create task to spawn red particles around boss every 0.5 seconds
+        final int[] taskId = new int[1];
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (boss.isDead() || !boss.isValid()) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Spawn red particles around the boss
+                Location loc = boss.getLocation();
+                for (int i = 0; i < 8; i++) {
+                    double angle = (i * Math.PI * 2) / 8;
+                    double radius = 1.5;
+                    double x = loc.getX() + Math.cos(angle) * radius;
+                    double y = loc.getY() + 1.0;
+                    double z = loc.getZ() + Math.sin(angle) * radius;
+                    
+                    Location particleLoc = new Location(loc.getWorld(), x, y, z);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.DUST, particleLoc, 1, 
+                        new org.bukkit.Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                }
+            }
+        }, 0L, 10L); // Every 0.5 seconds (10 ticks)
+        
+        // Store task ID for cleanup
+        boss.setMetadata("boss_particle_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+    
+    /**
+     * Start boss targeting task for solo run
+     */
+    private void startBossTargetingTaskForSolo(LivingEntity boss, Run run) {
+        if (boss == null || boss.isDead()) return;
+        
+        // Create task to update boss target every 2 seconds
+        final int[] taskId = new int[1];
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (boss.isDead() || !boss.isValid()) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Find player and set as target
+                Player player = run.getPlayer();
+                if (player != null && player.isOnline() && !player.isDead()) {
+                    double dist = player.getLocation().distance(boss.getLocation());
+                    if (dist < 100) {
+                        if (boss instanceof org.bukkit.entity.Mob) {
+                            ((org.bukkit.entity.Mob) boss).setTarget(player);
+                        } else if (boss instanceof org.bukkit.entity.Wither) {
+                            ((org.bukkit.entity.Wither) boss).setTarget(player);
                         }
                     }
                 }
@@ -1794,36 +2072,110 @@ public class GameManager {
     }
 
     private void levelUp(TeamRun teamRun) {
-        teamRun.setLevel(teamRun.getLevel() + 1);
-        teamRun.addExperience(-teamRun.getExperienceToNextLevel());
-        
-        // Less aggressive scaling for early levels (1-5), then standard 1.5x after
-        int currentLevel = teamRun.getLevel();
-        double scaleMultiplier;
-        if (currentLevel <= 5) {
-            // Early levels: 1.25x scaling (easier progression)
-            scaleMultiplier = 1.25;
-        } else {
-            // Later levels: 1.5x scaling (standard progression)
-            scaleMultiplier = 1.5;
-        }
-        teamRun.setExperienceToNextLevel((int) (teamRun.getExperienceToNextLevel() * scaleMultiplier));
+        levelUpRun(teamRun);
+    }
+    
+    private void levelUp(Run run) {
+        levelUpRun(run);
+    }
+    
+    /**
+     * Generic level up method that works for both Run and TeamRun
+     */
+    private void levelUpRun(Object run) {
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            // Store old required XP before modifying
+            int oldRequiredXP = teamRun.getExperienceToNextLevel();
+            teamRun.setLevel(teamRun.getLevel() + 1);
+            
+            // Subtract old required XP and ensure experience doesn't go negative
+            int newExperience = Math.max(0, teamRun.getExperience() - oldRequiredXP);
+            teamRun.addExperience(-teamRun.getExperience()); // Reset to 0 first
+            teamRun.addExperience(newExperience); // Set to remainder (handles overflow)
+            
+            // Less aggressive scaling for faster progression
+            int currentLevel = teamRun.getLevel();
+            double scaleMultiplier;
+            if (currentLevel <= 5) {
+                // Early levels: 1.2x scaling (faster progression)
+                scaleMultiplier = 1.2;
+            } else {
+                // Later levels: 1.35x scaling (faster than before)
+                scaleMultiplier = 1.35;
+            }
+            teamRun.setExperienceToNextLevel((int) (oldRequiredXP * scaleMultiplier));
 
-        // Flash XP bar and notify all players
-        for (Player player : teamRun.getPlayers()) {
+            // Flash XP bar and notify all players
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    player.sendMessage("§6§lLEVEL UP! §eLevel " + teamRun.getLevel());
+                    player.sendMessage("§aChoose your power-up!");
+                    
+                    // Flash XP bar for level up
+                    com.eldor.roguecraft.util.XPBar.flashLevelUp(player, teamRun.getLevel());
+                    
+                    // Update XP bar with gold after level up
+                    com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                        player,
+                        teamRun.getExperience(),
+                        teamRun.getExperienceToNextLevel(),
+                        teamRun.getLevel(),
+                        teamRun.getWave(),
+                        teamRun.getCurrentGold()
+                    );
+                }
+            }
+            
+            // Open power-up GUI for all players
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    plugin.getGuiManager().openPowerUpGUI(player, teamRun);
+                }
+            }
+        } else if (run instanceof Run) {
+            Run soloRun = (Run) run;
+            // Store old required XP before modifying
+            int oldRequiredXP = soloRun.getExperienceToNextLevel();
+            soloRun.setLevel(soloRun.getLevel() + 1);
+            
+            // Subtract old required XP and ensure experience doesn't go negative
+            int newExperience = Math.max(0, soloRun.getExperience() - oldRequiredXP);
+            soloRun.addExperience(-soloRun.getExperience()); // Reset to 0 first
+            soloRun.addExperience(newExperience); // Set to remainder (handles overflow)
+            
+            // Less aggressive scaling for faster progression
+            int currentLevel = soloRun.getLevel();
+            double scaleMultiplier;
+            if (currentLevel <= 5) {
+                // Early levels: 1.2x scaling (faster progression)
+                scaleMultiplier = 1.2;
+            } else {
+                // Later levels: 1.35x scaling (faster than before)
+                scaleMultiplier = 1.35;
+            }
+            soloRun.setExperienceToNextLevel((int) (oldRequiredXP * scaleMultiplier));
+            
+            Player player = soloRun.getPlayer();
             if (player != null && player.isOnline()) {
-                player.sendMessage("§6§lLEVEL UP! §eLevel " + teamRun.getLevel());
+                player.sendMessage("§6§lLEVEL UP! §eLevel " + soloRun.getLevel());
                 player.sendMessage("§aChoose your power-up!");
                 
                 // Flash XP bar for level up
-                com.eldor.roguecraft.util.XPBar.flashLevelUp(player, teamRun.getLevel());
-            }
-        }
-        
-        // Open power-up GUI for all players
-        for (Player player : teamRun.getPlayers()) {
-            if (player != null && player.isOnline()) {
-                plugin.getGuiManager().openPowerUpGUI(player, teamRun);
+                com.eldor.roguecraft.util.XPBar.flashLevelUp(player, soloRun.getLevel());
+                
+                // Update XP bar with gold after level up
+                com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                    player,
+                    soloRun.getExperience(),
+                    soloRun.getExperienceToNextLevel(),
+                    soloRun.getLevel(),
+                    soloRun.getWave(),
+                    soloRun.getCurrentGold()
+                );
+                
+                // Open power-up GUI
+                plugin.getGuiManager().openPowerUpGUI(player, soloRun);
             }
         }
     }
@@ -1845,6 +2197,10 @@ public class GameManager {
             }
 
             plugin.getRunManager().endTeamRun(teamId);
+        } else {
+            // If teamRun is null, still try to clean up chests for this teamId
+            plugin.getLogger().warning("[GameManager] TeamRun not found for teamId " + teamId + ", attempting chest cleanup anyway");
+            plugin.getChestManager().removeChestsForRun(teamId);
         }
 
         // Cancel tasks
@@ -1862,6 +2218,14 @@ public class GameManager {
         if (regenTask != null) {
             regenTask.cancel();
         }
+        
+        BukkitTask jumpHeightTask = jumpHeightTasks.remove(teamId);
+        if (jumpHeightTask != null) {
+            jumpHeightTask.cancel();
+        }
+        
+        // Clean up weapon selection tracking
+        teamsInWeaponSelection.remove(teamId);
         
         // Clean up last damage time tracking for all players in the team
         if (teamRun != null) {
@@ -2050,10 +2414,11 @@ public class GameManager {
             }
         }
         
-        // 6. Remove physical shrines
-        if (isTeamRun) {
-            plugin.getShrineManager().removeShrinesForRun(runId);
-        }
+        // 6. Remove physical shrines (for both team and solo runs)
+        plugin.getShrineManager().removeShrinesForRun(runId);
+        
+        // 6b. Remove gacha chests (for both team and solo runs)
+        plugin.getChestManager().removeChestsForRun(runId);
         
         // 7. Clear GUI queue for all players in the run
         if (run instanceof TeamRun) {

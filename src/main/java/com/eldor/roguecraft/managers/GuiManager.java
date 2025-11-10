@@ -1,8 +1,10 @@
 package com.eldor.roguecraft.managers;
 
 import com.eldor.roguecraft.RoguecraftPlugin;
+import com.eldor.roguecraft.gui.GachaRollGUI;
 import com.eldor.roguecraft.gui.PowerUpGUI;
 import com.eldor.roguecraft.gui.ShrineGUI;
+import com.eldor.roguecraft.models.GachaItem;
 import com.eldor.roguecraft.models.Shrine;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -28,7 +30,7 @@ public class GuiManager {
         // Check if player is in a GUI (including shrine GUI)
         if (playersInGUI.contains(playerId) || plugin.getShrineManager().isPlayerInShrineGUI(playerId)) {
             // Queue the power-up GUI
-            queueGUI(player, new PendingGUI(GUIType.POWERUP_SOLO, run, null, null, null));
+            queueGUI(player, new PendingGUI(GUIType.POWERUP_SOLO, run, null, null, null, null, 1.0));
             player.sendMessage(ChatColor.YELLOW + "⏳ Power-up selection queued (shrine GUI active)");
             return;
         }
@@ -53,7 +55,7 @@ public class GuiManager {
         // Check if player is in a GUI (including shrine GUI)
         if (playersInGUI.contains(playerId) || plugin.getShrineManager().isPlayerInShrineGUI(playerId)) {
             // Queue the power-up GUI
-            queueGUI(player, new PendingGUI(GUIType.POWERUP_TEAM, null, teamRun, null, null));
+            queueGUI(player, new PendingGUI(GUIType.POWERUP_TEAM, null, teamRun, null, null, null, 1.0));
             player.sendMessage(ChatColor.YELLOW + "⏳ Power-up selection queued (shrine GUI active)");
             return;
         }
@@ -75,7 +77,7 @@ public class GuiManager {
         if (playersInGUI.contains(playerId)) {
             plugin.getLogger().warning("[GuiManager] Player " + player.getName() + " is already in GUI, queueing shrine GUI instead.");
             // Queue the shrine GUI
-            queueGUI(player, new PendingGUI(GUIType.SHRINE, null, null, shrine, teamId));
+            queueGUI(player, new PendingGUI(GUIType.SHRINE, null, null, shrine, teamId, null, 1.0));
             player.sendMessage(ChatColor.YELLOW + "⏳ Shrine selection queued (GUI active)");
             return;
         }
@@ -94,6 +96,51 @@ public class GuiManager {
         
         plugin.getLogger().info("[GuiManager] Opening shrine GUI for " + player.getName() + ". playersInGUI now contains: " + playersInGUI.contains(playerId));
         new ShrineGUI(plugin, player, shrine, teamId).open();
+    }
+    
+    public void openGachaRollGUI(Player player, com.eldor.roguecraft.models.GachaItem item, double luck, com.eldor.roguecraft.models.Run run) {
+        UUID playerId = player.getUniqueId();
+        
+        // Check if player is in a GUI
+        if (playersInGUI.contains(playerId) || plugin.getShrineManager().isPlayerInShrineGUI(playerId)) {
+            // Queue the gacha roll GUI
+            queueGUI(player, new PendingGUI(GUIType.GACHA_ROLL_SOLO, run, null, null, null, item, luck));
+            player.sendMessage(ChatColor.YELLOW + "⏳ Gacha roll queued (GUI active)");
+            return;
+        }
+        
+        // Mark player as in GUI first (so freeze check works)
+        playersInGUI.add(playerId);
+        
+        // Freeze mobs IMMEDIATELY before opening GUI
+        com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        if (teamRun != null) {
+            teamRun.setPlayerInGUI(playerId, true);
+            plugin.getGameManager().updateMobFreeze(teamRun);
+        }
+        
+        new GachaRollGUI(plugin, player, item, luck, run).open();
+    }
+    
+    public void openGachaRollGUI(Player player, com.eldor.roguecraft.models.GachaItem item, double luck, com.eldor.roguecraft.models.TeamRun teamRun) {
+        UUID playerId = player.getUniqueId();
+        
+        // Check if player is in a GUI
+        if (playersInGUI.contains(playerId) || plugin.getShrineManager().isPlayerInShrineGUI(playerId)) {
+            // Queue the gacha roll GUI
+            queueGUI(player, new PendingGUI(GUIType.GACHA_ROLL_TEAM, null, teamRun, null, null, item, luck));
+            player.sendMessage(ChatColor.YELLOW + "⏳ Gacha roll queued (GUI active)");
+            return;
+        }
+        
+        // Mark player as in GUI first (so freeze check works)
+        playersInGUI.add(playerId);
+        teamRun.setPlayerInGUI(playerId, true);
+        
+        // Freeze mobs IMMEDIATELY before opening GUI
+        plugin.getGameManager().updateMobFreeze(teamRun);
+        
+        new GachaRollGUI(plugin, player, item, luck, teamRun).open();
     }
     
     /**
@@ -157,6 +204,19 @@ public class GuiManager {
                 }
                 new ShrineGUI(plugin, player, gui.shrine, gui.teamId).open();
                 break;
+            case GACHA_ROLL_SOLO:
+                com.eldor.roguecraft.models.TeamRun gachaTeamRun = plugin.getRunManager().getTeamRun(player);
+                if (gachaTeamRun != null) {
+                    gachaTeamRun.setPlayerInGUI(playerId, true);
+                    plugin.getGameManager().updateMobFreeze(gachaTeamRun);
+                }
+                new GachaRollGUI(plugin, player, gui.gachaItem, gui.luck, gui.run).open();
+                break;
+            case GACHA_ROLL_TEAM:
+                gui.teamRun.setPlayerInGUI(playerId, true);
+                plugin.getGameManager().updateMobFreeze(gui.teamRun);
+                new GachaRollGUI(plugin, player, gui.gachaItem, gui.luck, gui.teamRun).open();
+                break;
         }
     }
     
@@ -184,20 +244,33 @@ public class GuiManager {
         final com.eldor.roguecraft.models.TeamRun teamRun;
         final Shrine shrine;
         final UUID teamId;
+        final com.eldor.roguecraft.models.GachaItem gachaItem;
+        final double luck;
         
         PendingGUI(GUIType type, com.eldor.roguecraft.models.Run run, 
-                   com.eldor.roguecraft.models.TeamRun teamRun, Shrine shrine, UUID teamId) {
+                   com.eldor.roguecraft.models.TeamRun teamRun, Shrine shrine, UUID teamId,
+                   com.eldor.roguecraft.models.GachaItem gachaItem, double luck) {
             this.type = type;
             this.run = run;
             this.teamRun = teamRun;
             this.shrine = shrine;
             this.teamId = teamId;
+            this.gachaItem = gachaItem;
+            this.luck = luck;
+        }
+        
+        // Legacy constructor for non-gacha GUIs
+        PendingGUI(GUIType type, com.eldor.roguecraft.models.Run run, 
+                   com.eldor.roguecraft.models.TeamRun teamRun, Shrine shrine, UUID teamId) {
+            this(type, run, teamRun, shrine, teamId, null, 1.0);
         }
     }
     
     private enum GUIType {
         POWERUP_SOLO,
         POWERUP_TEAM,
-        SHRINE
+        SHRINE,
+        GACHA_ROLL_SOLO,
+        GACHA_ROLL_TEAM
     }
 }

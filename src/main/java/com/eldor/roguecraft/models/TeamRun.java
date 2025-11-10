@@ -14,12 +14,17 @@ public class TeamRun {
     private int wave;
     private double difficultyMultiplier;
     private final List<PowerUp> collectedPowerUps;
+    private final List<com.eldor.roguecraft.models.GachaItem> collectedGachaItems;
     private final Map<String, Double> stats;
     private int rerollsRemaining;
     private boolean isActive;
     private final Set<UUID> playersInGUI;
     private final Map<UUID, Long> guiOpenTimestamps;
     private Weapon weapon; // Team's shared weapon
+    private int currentGold; // Current gold in this run
+    private int totalGoldCollected; // Total gold collected in this run
+    private int chestCost; // Current cost to open a chest
+    private final Set<UUID> clickedBossShrines; // Track boss shrines that have been clicked
 
     public TeamRun(Player initialPlayer) {
         this.playerIds = new HashSet<>();
@@ -28,29 +33,36 @@ public class TeamRun {
         this.players.add(initialPlayer);
         this.level = 1;
         this.experience = 0;
-        this.experienceToNextLevel = 75; // Reduced from 100 for faster early leveling
+        this.experienceToNextLevel = 50; // Lower base for faster early leveling
         this.startTime = System.currentTimeMillis();
         this.wave = 1;
         this.difficultyMultiplier = 1.0;
         this.collectedPowerUps = new ArrayList<>();
+        this.collectedGachaItems = new ArrayList<>();
         this.stats = new HashMap<>();
         this.rerollsRemaining = 2;
         this.isActive = true;
         this.playersInGUI = new HashSet<>();
         this.guiOpenTimestamps = new HashMap<>();
+        this.currentGold = 0; // Start with 0 gold
+        this.totalGoldCollected = 0; // Track total gold collected
+        this.chestCost = 50; // Initial chest cost
+        this.clickedBossShrines = new HashSet<>(); // Track clicked boss shrines
         
         // Initialize base stats
         stats.put("health", 20.0);
         stats.put("damage", 1.0);
         stats.put("speed", 1.0);
         stats.put("armor", 0.0);
-        stats.put("crit_chance", 0.0);
+        stats.put("crit_chance", 0.05);
         stats.put("crit_damage", 1.5);
         stats.put("luck", 1.0); // Base luck stat
         stats.put("xp_multiplier", 1.0); // XP gain multiplier
         stats.put("difficulty", 1.0); // Base difficulty multiplier (affects enemy HP/damage/spawns)
-        stats.put("regeneration", 0.0); // Health regeneration per second
+        stats.put("regeneration", 0.01); // Health regeneration per second
         stats.put("drop_rate", 1.0); // Drop rate multiplier (1.0 = 100% of base chance)
+        stats.put("pickup_range", 1.0); // Pickup range in blocks (default 1 block)
+        stats.put("jump_height", 0.0); // Jump height stat (applies slow falling effect)
     }
 
     public void addPlayer(Player player) {
@@ -136,6 +148,14 @@ public class TeamRun {
     public void addPowerUp(PowerUp powerUp) {
         this.collectedPowerUps.add(powerUp);
     }
+    
+    public List<com.eldor.roguecraft.models.GachaItem> getCollectedGachaItems() {
+        return new ArrayList<>(collectedGachaItems);
+    }
+    
+    public void addGachaItem(com.eldor.roguecraft.models.GachaItem item) {
+        this.collectedGachaItems.add(item);
+    }
 
     public Map<String, Double> getStats() {
         return new HashMap<>(stats);
@@ -203,6 +223,45 @@ public class TeamRun {
     
     public void setWeapon(Weapon weapon) {
         this.weapon = weapon;
+    }
+    
+    // Currency methods
+    public int getCurrentGold() {
+        return currentGold;
+    }
+    
+    public void addGold(int amount) {
+        this.currentGold += amount;
+        this.totalGoldCollected += amount;
+    }
+    
+    public boolean spendGold(int amount) {
+        if (currentGold >= amount) {
+            this.currentGold -= amount;
+            return true;
+        }
+        return false;
+    }
+    
+    public int getTotalGoldCollected() {
+        return totalGoldCollected;
+    }
+    
+    public int getChestCost() {
+        return chestCost;
+    }
+    
+    public void increaseChestCost() {
+        // Exponential scaling: 1.75x multiplier for aggressive cost growth
+        this.chestCost = (int) Math.ceil(chestCost * 1.75);
+    }
+    
+    public Set<UUID> getClickedBossShrines() {
+        return new HashSet<>(clickedBossShrines);
+    }
+    
+    public void markBossShrineClicked(UUID shrineId) {
+        clickedBossShrines.add(shrineId);
     }
 }
 

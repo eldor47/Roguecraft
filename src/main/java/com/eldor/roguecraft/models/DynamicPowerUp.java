@@ -56,11 +56,17 @@ public class DynamicPowerUp {
             } else if (roll < regenEnd) {
                 // 5% chance for regeneration (only if not excluded)
                 stat = "regeneration";
-            } else if (roll < 0.995) {
+            } else if (roll < 0.992) {
                 // 2.5% chance for drop_rate
                 stat = "drop_rate";
+            } else if (roll < 0.994) {
+                // 0.5% chance for pickup_range
+                stat = "pickup_range";
+            } else if (roll < 0.997) {
+                // 0.3% chance for jump_height
+                stat = "jump_height";
             } else {
-                // 0.5% chance for xp_multiplier
+                // 0.3% chance for xp_multiplier
                 stat = "xp_multiplier";
             }
         } while (excludeRegeneration && stat.equals("regeneration") && attempts < maxAttempts);
@@ -429,6 +435,14 @@ public class DynamicPowerUp {
             // Drop rate: base value of 0.02 (2% increase), scales with level (reduced to prevent excessive values)
             return 0.02 + (playerLevel * 0.005);
         }
+        if (stat.equals("pickup_range")) {
+            // Pickup range: base value of 0.5 blocks, scales with level
+            return 0.5 + (playerLevel * 0.1);
+        }
+        if (stat.equals("jump_height")) {
+            // Jump height: base value of 0.3, scales with level
+            return 0.3 + (playerLevel * 0.05);
+        }
         double levelScaling = 1.0 + (playerLevel * 0.15);
         
         switch (stat) {
@@ -494,6 +508,10 @@ public class DynamicPowerUp {
                 return "Regeneration";
             case "drop_rate":
                 return "Drop Rate";
+            case "pickup_range":
+                return "Pickup Range";
+            case "jump_height":
+                return "Jump Height";
             default:
                 return stat;
         }
@@ -512,6 +530,12 @@ public class DynamicPowerUp {
             return String.format("%.2f HP/s", value); // Show as HP per second
         } else if (stat.equals("drop_rate")) {
             return String.format("+%.1f%%", value * 100); // Show as percentage increase
+        } else if (stat.equals("pickup_range")) {
+            return String.format("+%.1f blocks", value); // Show as blocks
+        } else if (stat.equals("jump_height")) {
+            // Calculate slow falling level for display
+            int slowFallingLevel = (int) Math.min(4, Math.floor(value / 0.5));
+            return String.format("+%.1f (Slow Falling %d)", value, slowFallingLevel);
         } else {
             return String.format("%.1f", value);
         }
@@ -541,6 +565,10 @@ public class DynamicPowerUp {
                 return Material.GOLDEN_APPLE; // Golden apple for regeneration
             case "drop_rate":
                 return Material.EMERALD; // Emerald for drop rate
+            case "pickup_range":
+                return Material.LEAD; // Lead for pickup range (magnet-like)
+            case "jump_height":
+                return Material.FEATHER; // Feather for jump height
             default:
                 return Material.PAPER;
         }

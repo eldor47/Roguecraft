@@ -27,12 +27,19 @@ public class XPBar {
      * Create or update XP bar for a player with wave number
      */
     public static void updateXPBar(Player player, int currentXP, int requiredXP, int level, int wave) {
+        updateXPBarWithGold(player, currentXP, requiredXP, level, wave, 0);
+    }
+    
+    /**
+     * Create or update XP bar for a player with wave number and gold
+     */
+    public static void updateXPBarWithGold(Player player, int currentXP, int requiredXP, int level, int wave, int gold) {
         BossBar bar = activeBars.get(player.getUniqueId());
         
         if (bar == null) {
             String title = wave > 0 ? 
-                "Wave " + wave + " | Level " + level + " | XP: " + currentXP + " / " + requiredXP :
-                "Level " + level + " | XP: " + currentXP + " / " + requiredXP;
+                "Wave " + wave + " | Level " + level + " | XP: " + currentXP + " / " + requiredXP + " | Gold: " + gold :
+                "Level " + level + " | XP: " + currentXP + " / " + requiredXP + " | Gold: " + gold;
             bar = Bukkit.createBossBar(
                 title,
                 BarColor.GREEN,
@@ -51,8 +58,8 @@ public class XPBar {
         }
         bar.setProgress(progress);
         String title = wave > 0 ?
-            "§bWave §f" + wave + " §7| §6Level " + level + " §7| §eXP: §f" + currentXP + " §7/ §f" + requiredXP :
-            "§6Level " + level + " §7| §eXP: §f" + currentXP + " §7/ §f" + requiredXP;
+            "§bWave §f" + wave + " §7| §6Level " + level + " §7| §eXP: §f" + currentXP + " §7/ §f" + requiredXP + " §7| §6💰 Gold: §f" + gold :
+            "§6Level " + level + " §7| §eXP: §f" + currentXP + " §7/ §f" + requiredXP + " §7| §6💰 Gold: §f" + gold;
         bar.setTitle(title);
         
         // Change color based on progress

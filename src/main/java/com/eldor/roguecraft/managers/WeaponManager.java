@@ -104,6 +104,18 @@ public class WeaponManager {
         double nearestDistance = range * range; // Use squared distance for efficiency
         
         for (Entity entity : player.getWorld().getNearbyEntities(playerLoc, range, range, range)) {
+            // Ignore Text Display entities (used for XP display)
+            if (entity instanceof org.bukkit.entity.TextDisplay || 
+                entity instanceof org.bukkit.entity.Display) {
+                continue;
+            }
+            
+            // Ignore ArmorStands used for XP display (they have metadata "roguecraft_xp_display")
+            if (entity instanceof org.bukkit.entity.ArmorStand && 
+                entity.hasMetadata("roguecraft_xp_display")) {
+                continue;
+            }
+            
             if (entity instanceof LivingEntity && !(entity instanceof Player) && !entity.isDead()) {
                 LivingEntity living = (LivingEntity) entity;
                 double distSq = playerLoc.distanceSquared(living.getLocation());
@@ -170,6 +182,36 @@ public class WeaponManager {
         
         // Apply damage multiplier
         double finalDamage = baseDamage * damageMultiplier;
+        
+        // Apply Big Bonk - 2% chance for 20x damage
+        if (target != null) {
+            for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_big_bonk")) {
+                if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                    com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                    java.util.Random random = new java.util.Random();
+                    if (random.nextDouble() < item.getValue()) {
+                        // Big Bonk - 20x damage!
+                        finalDamage *= 20.0;
+                        // Visual and audio feedback
+                        target.getWorld().spawnParticle(Particle.EXPLOSION, target.getEyeLocation(), 20, 0.5, 0.5, 0.5, 0.1);
+                        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.BLOCK_ANVIL_LAND, 1.0f, 0.5f);
+                        player.sendMessage(org.bukkit.ChatColor.YELLOW + "💥 BIG BONK! 💥");
+                    }
+                }
+            }
+            
+            // Apply Boss Buster - 15% more damage to elites/bosses
+            boolean isElite = target.hasMetadata("is_elite") || target.hasMetadata("is_legendary") || 
+                             target.hasMetadata("is_elite_boss") || target.hasMetadata("roguecraft_elite_boss");
+            if (isElite) {
+                for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_boss_buster")) {
+                    if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                        com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                        finalDamage *= (1.0 + item.getValue()); // Add 15% damage
+                    }
+                }
+            }
+        }
         
         // Apply synergy damage multipliers
         Object synergyRun = teamRun != null ? teamRun : run;
@@ -383,6 +425,216 @@ public class WeaponManager {
             target.setFreezeTicks(100);
             target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation(), 20, 0.5, 1.0, 0.5, 0.1);
         }
+        
+        // Apply gacha on-hit effects
+        applyGachaOnHitEffects(player, target);
+    }
+    
+    /**
+     * Apply all gacha item on-hit effects
+     */
+    private void applyGachaOnHitEffects(Player player, LivingEntity target) {
+        java.util.Random random = new java.util.Random();
+        
+        // Check all gacha items the player has
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_moldy_cheese")) {
+            if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                if (random.nextDouble() < item.getValue()) {
+                    // Moldy Cheese - poison effect
+                    target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                        org.bukkit.potion.PotionEffectType.POISON, 100, 0)); // 5 seconds
+                    target.getWorld().spawnParticle(Particle.ITEM_SLIME, target.getLocation(), 10, 0.3, 0.5, 0.3, 0.01);
+                }
+            }
+        }
+        
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_ice_crystal")) {
+            if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                if (random.nextDouble() < item.getValue()) {
+                    // Ice Crystal - freeze effect
+                    target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                        org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1)); // Slow II for 5 seconds
+                    target.setFreezeTicks(100);
+                    target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation(), 15, 0.3, 0.5, 0.3, 0.01);
+                }
+            }
+        }
+        
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_cursed_doll")) {
+            if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                if (random.nextDouble() < item.getValue()) {
+                    // Cursed Doll - curse effect (30% max HP per second for 3 seconds)
+                    applyCurseEffect(player, target);
+                }
+            }
+        }
+        
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_spicy_meatball")) {
+            if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                if (random.nextDouble() < item.getValue()) {
+                    // Spicy Meatball - explosion effect
+                    createExplosionEffect(player, target, item.getValue());
+                }
+            }
+        }
+        
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_power_gloves")) {
+            if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
+                com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
+                if (random.nextDouble() < item.getValue()) {
+                    // Power Gloves - giant blast effect
+                    createBlastEffect(player, target);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Apply curse effect - deals 30% of max HP per second for 3 seconds
+     */
+    private void applyCurseEffect(Player player, LivingEntity target) {
+        if (target.isDead() || !target.isValid()) return;
+        
+        double maxHP = target.getMaxHealth();
+        double curseDamage = maxHP * 0.30; // 30% of max HP
+        
+        // Visual effect
+        target.getWorld().spawnParticle(Particle.SMOKE, target.getEyeLocation(), 20, 0.3, 0.5, 0.3, 0.05);
+        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.ENTITY_WITHER_HURT, 0.5f, 1.5f);
+        
+        // Apply curse damage over 3 seconds (60 ticks, every 20 ticks = 1 second)
+        final LivingEntity finalTarget = target;
+        final int[] ticksElapsed = {0};
+        org.bukkit.scheduler.BukkitTask curseTask = org.bukkit.Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (finalTarget.isDead() || !finalTarget.isValid() || ticksElapsed[0] >= 60) {
+                return;
+            }
+            
+            if (ticksElapsed[0] % 20 == 0) { // Every second
+                finalTarget.damage(curseDamage, player);
+                finalTarget.getWorld().spawnParticle(Particle.SMOKE, finalTarget.getEyeLocation(), 10, 0.2, 0.3, 0.2, 0.02);
+            }
+            
+            ticksElapsed[0]++;
+        }, 0L, 1L);
+        
+        // Cancel task after 3 seconds
+        org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (curseTask != null && !curseTask.isCancelled()) {
+                curseTask.cancel();
+            }
+        }, 60L);
+    }
+    
+    /**
+     * Create explosion effect - deals 65% damage to nearby enemies
+     */
+    private void createExplosionEffect(Player player, LivingEntity target, double damagePercent) {
+        org.bukkit.Location explodeLoc = target.getLocation();
+        double explosionRadius = 3.0; // 3 block radius
+        
+        // Visual and audio
+        target.getWorld().spawnParticle(Particle.EXPLOSION, explodeLoc, 10, 0.5, 0.5, 0.5, 0.1);
+        target.getWorld().playSound(explodeLoc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 0.8f, 1.2f);
+        
+        // Get base damage from player's weapon
+        double baseDamage = 0.0;
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        Run run = null;
+        if (teamRun != null && teamRun.isActive()) {
+            if (teamRun.getWeapon() != null) {
+                baseDamage = teamRun.getWeapon().getDamage();
+            }
+        } else {
+            run = plugin.getRunManager().getRun(player);
+            if (run != null && run.isActive()) {
+                if (run.getWeapon() != null) {
+                    baseDamage = run.getWeapon().getDamage();
+                }
+            }
+        }
+        
+        double explosionDamage = baseDamage * damagePercent; // 65% of base damage
+        
+        // Apply damage to nearby enemies
+        for (org.bukkit.entity.Entity entity : explodeLoc.getWorld().getNearbyEntities(explodeLoc, explosionRadius, explosionRadius, explosionRadius)) {
+            if (entity instanceof LivingEntity && !(entity instanceof org.bukkit.entity.Player) && entity != target) {
+                LivingEntity living = (LivingEntity) entity;
+                double distance = entity.getLocation().distance(explodeLoc);
+                double distanceMultiplier = Math.max(0.1, 1.0 - (distance / explosionRadius));
+                double finalDamage = calculateFinalDamage(player, explosionDamage * distanceMultiplier, living);
+                living.damage(finalDamage, player);
+                living.getWorld().spawnParticle(Particle.EXPLOSION, living.getLocation(), 3, 0.2, 0.2, 0.2, 0.05);
+            }
+        }
+    }
+    
+    /**
+     * Create giant blast effect - damages and knocks away nearby enemies
+     */
+    private void createBlastEffect(Player player, LivingEntity target) {
+        org.bukkit.Location blastLoc = target.getLocation();
+        double blastRadius = 5.0; // 5 block radius
+        
+        // Visual and audio
+        target.getWorld().spawnParticle(Particle.EXPLOSION, blastLoc, 5, 1.0, 1.0, 1.0, 0.1);
+        target.getWorld().spawnParticle(Particle.CLOUD, blastLoc, 30, 1.0, 1.0, 1.0, 0.1);
+        target.getWorld().playSound(blastLoc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 0.8f);
+        
+        // Get base damage
+        double baseDamage = 0.0;
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        Run run = null;
+        if (teamRun != null && teamRun.isActive()) {
+            if (teamRun.getWeapon() != null) {
+                baseDamage = teamRun.getWeapon().getDamage();
+            }
+        } else {
+            run = plugin.getRunManager().getRun(player);
+            if (run != null && run.isActive()) {
+                if (run.getWeapon() != null) {
+                    baseDamage = run.getWeapon().getDamage();
+                }
+            }
+        }
+        
+        // Apply damage and knockback to nearby enemies
+        for (org.bukkit.entity.Entity entity : blastLoc.getWorld().getNearbyEntities(blastLoc, blastRadius, blastRadius, blastRadius)) {
+            if (entity instanceof LivingEntity && !(entity instanceof org.bukkit.entity.Player)) {
+                LivingEntity living = (LivingEntity) entity;
+                double distance = entity.getLocation().distance(blastLoc);
+                double distanceMultiplier = Math.max(0.1, 1.0 - (distance / blastRadius));
+                double finalDamage = calculateFinalDamage(player, baseDamage * distanceMultiplier, living);
+                living.damage(finalDamage, player);
+                
+                // Knockback
+                org.bukkit.util.Vector knockback = living.getLocation().toVector().subtract(blastLoc.toVector()).normalize();
+                knockback.multiply(1.5); // Knockback strength
+                knockback.setY(0.5); // Add upward component
+                living.setVelocity(knockback);
+                
+                living.getWorld().spawnParticle(Particle.EXPLOSION, living.getLocation(), 2, 0.3, 0.3, 0.3, 0.05);
+            }
+        }
+    }
+    
+    /**
+     * Get gold multiplier from Golden Glove gacha item
+     * Returns 1.0 + multiplier (e.g., 1.15 for 15% boost)
+     * Ready for use when currency system is implemented
+     */
+    public double getGoldMultiplier(Player player) {
+        double multiplier = 1.0;
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_gold_multiplier")) {
+            if (meta.value() instanceof Double) {
+                multiplier += (Double) meta.value(); // Add percentage boost (0.15 = 15%)
+            }
+        }
+        return multiplier;
     }
     
     /**
@@ -415,6 +667,14 @@ public class WeaponManager {
         if (hasWeaponMod(player, "Rapid Fire")) {
             double rapidFireValue = getWeaponModValue(player, "Rapid Fire");
             baseSpeed *= (1.0 + rapidFireValue * 0.3); // 30% per value point
+        }
+        
+        // Apply Battery gacha item - attack speed boost
+        for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_attack_speed_battery")) {
+            if (meta.value() instanceof Double) {
+                double attackSpeedBoost = (Double) meta.value();
+                baseSpeed *= (1.0 + attackSpeedBoost); // Add percentage boost
+            }
         }
         
         // Cap attack speed for Arrow Storm specifically to prevent overpowered scaling

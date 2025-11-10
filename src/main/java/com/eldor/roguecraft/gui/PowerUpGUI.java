@@ -29,6 +29,7 @@ public class PowerUpGUI implements Listener {
     private final TeamRun teamRun;
     private final Inventory inventory;
     private final List<PowerUp> powerUps;
+    private Inventory itemsGUI; // Track items view GUI
 
     public PowerUpGUI(RoguecraftPlugin plugin, Player player, Run run) {
         this.plugin = plugin;
@@ -118,6 +119,9 @@ public class PowerUpGUI implements Listener {
 
         // Add stats display at top row (slots 0-8)
         addStatsDisplay();
+        
+        // Add collected items view button
+        addCollectedItemsButton();
 
         // Add power-up options at slots 10, 13, 16
         if (powerUps.size() > 0) {
@@ -256,6 +260,108 @@ public class PowerUpGUI implements Listener {
         statsMeta.setLore(lore);
         statsItem.setItemMeta(statsMeta);
         inventory.setItem(4, statsItem);
+    }
+    
+    private void addCollectedItemsButton() {
+        // Collected Items Button (next to stats)
+        ItemStack itemsItem = new ItemStack(Material.CHEST);
+        ItemMeta itemsMeta = itemsItem.getItemMeta();
+        itemsMeta.setDisplayName(ChatColor.GOLD + "Collected Items");
+        
+        List<String> lore = new ArrayList<>();
+        lore.add("");
+        
+        List<com.eldor.roguecraft.models.GachaItem> collectedItems;
+        if (run != null) {
+            collectedItems = run.getCollectedGachaItems();
+        } else if (teamRun != null) {
+            collectedItems = teamRun.getCollectedGachaItems();
+        } else {
+            collectedItems = new ArrayList<>();
+        }
+        
+        if (collectedItems.isEmpty()) {
+            lore.add(ChatColor.GRAY + "No items collected yet.");
+            lore.add(ChatColor.GRAY + "Open chests to collect items!");
+        } else {
+            lore.add(ChatColor.YELLOW + "Items Collected: " + ChatColor.WHITE + collectedItems.size());
+            lore.add("");
+            
+            // Group items by rarity
+            Map<com.eldor.roguecraft.models.GachaItem.ItemRarity, Integer> rarityCounts = new LinkedHashMap<>();
+            for (com.eldor.roguecraft.models.GachaItem.ItemRarity rarity : com.eldor.roguecraft.models.GachaItem.ItemRarity.values()) {
+                rarityCounts.put(rarity, 0);
+            }
+            
+            for (com.eldor.roguecraft.models.GachaItem item : collectedItems) {
+                rarityCounts.put(item.getRarity(), rarityCounts.get(item.getRarity()) + 1);
+            }
+            
+            for (Map.Entry<com.eldor.roguecraft.models.GachaItem.ItemRarity, Integer> entry : rarityCounts.entrySet()) {
+                if (entry.getValue() > 0) {
+                    String rarityColor = entry.getKey().getColorCode();
+                    lore.add(rarityColor + entry.getKey().getDisplayName() + ": " + ChatColor.WHITE + entry.getValue());
+                }
+            }
+            
+            lore.add("");
+            lore.add(ChatColor.GRAY + "Click to view all items");
+        }
+        
+        itemsMeta.setLore(lore);
+        itemsItem.setItemMeta(itemsMeta);
+        inventory.setItem(8, itemsItem);
+    }
+    
+    private void showCollectedItemsGUI() {
+        List<com.eldor.roguecraft.models.GachaItem> collectedItems;
+        if (run != null) {
+            collectedItems = run.getCollectedGachaItems();
+        } else if (teamRun != null) {
+            collectedItems = teamRun.getCollectedGachaItems();
+        } else {
+            collectedItems = new ArrayList<>();
+        }
+        
+        if (collectedItems.isEmpty()) {
+            player.sendMessage(ChatColor.GRAY + "You haven't collected any items yet!");
+            return;
+        }
+        
+        // Create items view GUI
+        Inventory itemsGUI = Bukkit.createInventory(null, 54, "§6Collected Items (" + collectedItems.size() + ")");
+        
+        int slot = 0;
+        for (com.eldor.roguecraft.models.GachaItem item : collectedItems) {
+            if (slot >= 54) break; // Prevent overflow
+            
+            ItemStack itemStack = new ItemStack(item.getIcon());
+            ItemMeta meta = itemStack.getItemMeta();
+            
+            String rarityColor = item.getRarity().getColorCode();
+            meta.setDisplayName(rarityColor + item.getName());
+            
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + item.getDescription());
+            lore.add("");
+            lore.add(ChatColor.YELLOW + "Rarity: " + rarityColor + item.getRarity().getDisplayName());
+            lore.add(ChatColor.YELLOW + "Effect: " + ChatColor.WHITE + item.getEffect().name());
+            
+            meta.setLore(lore);
+            itemStack.setItemMeta(meta);
+            itemsGUI.setItem(slot, itemStack);
+            slot++;
+        }
+        
+        // Add back button
+        ItemStack backItem = new ItemStack(Material.ARROW);
+        ItemMeta backMeta = backItem.getItemMeta();
+        backMeta.setDisplayName(ChatColor.YELLOW + "Back");
+        backItem.setItemMeta(backMeta);
+        itemsGUI.setItem(49, backItem);
+        
+        this.itemsGUI = itemsGUI;
+        player.openInventory(itemsGUI);
     }
 
     private void addPowerUpItem(int slot, PowerUp powerUp) {
@@ -459,8 +565,24 @@ public class PowerUpGUI implements Listener {
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        if (!event.getInventory().equals(inventory)) return;
         if (event.getWhoClicked() != player) return;
+        
+        // Handle items GUI clicks
+        if (itemsGUI != null && event.getInventory().equals(itemsGUI)) {
+            event.setCancelled(true);
+            if (event.getSlot() == 49) {
+                // Back button clicked - reopen power-up GUI
+                player.closeInventory();
+                itemsGUI = null;
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    open();
+                }, 1L);
+            }
+            return;
+        }
+        
+        // Handle main power-up GUI clicks
+        if (!event.getInventory().equals(inventory)) return;
         
         event.setCancelled(true);
 
@@ -472,6 +594,9 @@ public class PowerUpGUI implements Listener {
             selectPowerUp(powerUps.get(2));
         } else if (event.getSlot() == 31 && getRerollsRemaining() > 0) {
             reroll();
+        } else if (event.getSlot() == 8) {
+            // Collected items button clicked
+            showCollectedItemsGUI();
         } else if (event.getSlot() == 35) {
             player.closeInventory();
         }

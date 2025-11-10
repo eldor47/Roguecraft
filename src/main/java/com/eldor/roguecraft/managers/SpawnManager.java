@@ -104,7 +104,26 @@ public class SpawnManager {
             List<SpawnEntry> scaledSpawns = new ArrayList<>();
             
             // Calculate scaling factor: wave / baseWave
-            double scaleFactor = (double) wave / baseWave;
+            // Reduce scaling for early waves (waves 1-5 scale slower)
+            double baseScaleFactor = (double) wave / baseWave;
+            double scaleFactor;
+            if (wave <= 5) {
+                // First 5 waves: slower scaling (0.4x multiplier - much less mobs)
+                scaleFactor = 1.0 + ((baseScaleFactor - 1.0) * 0.4);
+            } else if (wave <= 10) {
+                // Waves 6-10: moderate scaling (0.7x multiplier)
+                double earlyMax = 1.0 + ((5.0 / baseWave - 1.0) * 0.4);
+                double midScaling = (baseScaleFactor - (5.0 / baseWave)) * 0.7;
+                scaleFactor = earlyMax + midScaling;
+            } else {
+                // Waves 11+: normal scaling (1.0x multiplier)
+                double earlyMax = 1.0 + ((5.0 / baseWave - 1.0) * 0.4);
+                double midMax = earlyMax + ((10.0 / baseWave - 5.0 / baseWave) * 0.7);
+                double lateScaling = (baseScaleFactor - (10.0 / baseWave)) * 1.0;
+                scaleFactor = midMax + lateScaling;
+            }
+            // Ensure scaleFactor is at least 1.0
+            scaleFactor = Math.max(1.0, scaleFactor);
             
             // Track which mob types we already have from config
             Set<EntityType> existingTypes = new HashSet<>();
@@ -112,8 +131,13 @@ public class SpawnManager {
                 existingTypes.add(entry.getType());
             }
             
-            // Also increase variety as waves progress
-            int varietyBonus = (wave - baseWave) / 5; // Add more variety every 5 waves
+            // Also increase variety as waves progress (slower for early waves)
+            int varietyBonus;
+            if (wave <= 5) {
+                varietyBonus = 0; // No variety bonus for first 5 waves
+            } else {
+                varietyBonus = (wave - 5) / 5; // Add more variety every 5 waves after wave 5
+            }
             
             for (SpawnEntry entry : baseSpawns) {
                 // Scale count and potentially add more mobs

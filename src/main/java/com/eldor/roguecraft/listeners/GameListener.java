@@ -23,6 +23,7 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PotionSplashEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.entity.Snowball;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -31,17 +32,50 @@ import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.UUID;
 
 public class GameListener implements Listener {
     private final RoguecraftPlugin plugin;
+    private final Map<UUID, Integer> accumulatedGold; // Track accumulated gold per player
+    private org.bukkit.scheduler.BukkitTask goldDisplayTask; // Task to periodically display accumulated gold
 
     public GameListener(RoguecraftPlugin plugin) {
         this.plugin = plugin;
+        this.accumulatedGold = new HashMap<>();
+        startGoldDisplayTask();
     }
 
     private static final Random RANDOM = new Random();
+    
+    /**
+     * Start a task that periodically displays accumulated gold and resets it
+     */
+    private void startGoldDisplayTask() {
+        // Run every 1 second (20 ticks) to display accumulated gold
+        goldDisplayTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            for (Map.Entry<UUID, Integer> entry : new HashMap<>(accumulatedGold).entrySet()) {
+                UUID playerId = entry.getKey();
+                int gold = entry.getValue();
+                
+                if (gold > 0) {
+                    Player player = Bukkit.getPlayer(playerId);
+                    if (player != null && player.isOnline()) {
+                        // Display the accumulated gold
+                        showGoldTextDisplayNow(player, gold);
+                        // Reset accumulated gold
+                        accumulatedGold.put(playerId, 0);
+                    } else {
+                        // Player offline, remove from map
+                        accumulatedGold.remove(playerId);
+                    }
+                }
+            }
+        }, 20L, 20L); // Every 1 second
+    }
     
     @EventHandler(priority = EventPriority.LOWEST)
     public void onEntityDeath(EntityDeathEvent event) {
@@ -221,12 +255,13 @@ public class GameListener implements Listener {
             // Update XP bar for all team members instead of messages
             for (Player player : teamRun.getPlayers()) {
                 if (player != null && player.isOnline()) {
-                    com.eldor.roguecraft.util.XPBar.updateXPBar(
+                    com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                         player,
                         teamRun.getExperience(),
                         teamRun.getExperienceToNextLevel(),
                         teamRun.getLevel(),
-                        teamRun.getWave()
+                        teamRun.getWave(),
+                        teamRun.getCurrentGold()
                     );
                 }
             }
@@ -254,15 +289,59 @@ public class GameListener implements Listener {
             run.addExperience(xp);
 
             // Update XP bar instead of message
-            com.eldor.roguecraft.util.XPBar.updateXPBar(
+            com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                 killer,
                 run.getExperience(),
                 run.getExperienceToNextLevel(),
                 run.getLevel(),
-                run.getWave()
+                run.getWave(),
+                run.getCurrentGold()
             );
         }
         */
+        
+        // Award gold for killing mobs
+        if (!wasNuked) {
+            int baseGold = 5; // Base gold per mob
+            int goldReward = baseGold;
+            
+            // Apply multipliers for elite/legendary mobs
+            if (isLegendary) {
+                goldReward = baseGold * 10; // Legendary mobs give 10x gold
+            } else if (isElite) {
+                goldReward = baseGold * 3; // Elite mobs give 3x gold
+            }
+            
+            // Apply 2x gold power-up multiplier if active
+            double goldMultiplier = 1.0;
+            if (killer.hasMetadata("roguecraft_2x_gold")) {
+                goldMultiplier = 2.0;
+            }
+            
+            // Apply Golden Glove gacha item multiplier
+            double gachaGoldMultiplier = plugin.getWeaponManager().getGoldMultiplier(killer);
+            goldMultiplier *= gachaGoldMultiplier;
+            
+            goldReward = (int) (goldReward * goldMultiplier);
+            
+            // Award gold
+            if (teamRun != null && teamRun.isActive()) {
+                teamRun.addGold(goldReward);
+                // Accumulate gold for all team members (will be displayed periodically)
+                for (Player p : teamRun.getPlayers()) {
+                    if (p != null && p.isOnline()) {
+                        accumulateGold(p.getUniqueId(), goldReward);
+                        // Update boss bar with new gold amount
+                        updateBossBarWithGold(p, teamRun);
+                    }
+                }
+            } else if (run != null && run.isActive()) {
+                run.addGold(goldReward);
+                accumulateGold(killer.getUniqueId(), goldReward);
+                // Update boss bar with new gold amount
+                updateBossBarWithGold(killer, run);
+            }
+        }
         
         // Check for rare power-up shrine buff (Treasure Hunter)
         if (killer.hasMetadata("shrine_rare_powerup")) {
@@ -279,6 +358,70 @@ public class GameListener implements Listener {
             dropCustomItems(entity, isElite, isLegendary, run);
         } else {
             dropCustomItems(entity, isElite, isLegendary, null);
+        }
+        
+        // Legendary mobs have a chance to spawn a gacha chest
+        if (isLegendary && (teamRun != null || run != null)) {
+            spawnLegendaryChest(entity.getLocation(), teamRun != null ? teamRun : run);
+        }
+    }
+    
+    /**
+     * Spawn a gacha chest when a legendary mob dies
+     * 5% chance to spawn a chest (very rare drops)
+     */
+    private void spawnLegendaryChest(org.bukkit.Location location, Object run) {
+        // 5% chance to spawn a chest (very rare drops)
+        if (RANDOM.nextDouble() < 0.05) {
+            // Get team ID for chest tracking
+            java.util.UUID teamId = null;
+            if (run instanceof com.eldor.roguecraft.models.TeamRun) {
+                com.eldor.roguecraft.models.TeamRun tr = (com.eldor.roguecraft.models.TeamRun) run;
+                if (!tr.getPlayers().isEmpty()) {
+                    teamId = tr.getPlayers().get(0).getUniqueId();
+                }
+            } else if (run instanceof com.eldor.roguecraft.models.Run) {
+                teamId = ((com.eldor.roguecraft.models.Run) run).getPlayerId();
+            }
+            
+            if (teamId != null) {
+                // Spawn chest at legendary mob death location (costs gold, scales exponentially)
+                com.eldor.roguecraft.models.GachaChest chest = new com.eldor.roguecraft.models.GachaChest(location, false);
+                chest.spawn();
+                
+                // Add to chest manager's tracking
+                plugin.getChestManager().addChestForRun(teamId, chest);
+                
+                // Visual feedback
+                location.getWorld().spawnParticle(
+                    org.bukkit.Particle.TOTEM_OF_UNDYING,
+                    location.add(0, 1, 0),
+                    50,
+                    0.5, 0.5, 0.5,
+                    0.1
+                );
+                location.getWorld().playSound(
+                    location,
+                    org.bukkit.Sound.ENTITY_PLAYER_LEVELUP,
+                    1.0f,
+                    1.2f
+                );
+                
+                // Notify players
+                if (run instanceof com.eldor.roguecraft.models.TeamRun) {
+                    com.eldor.roguecraft.models.TeamRun tr = (com.eldor.roguecraft.models.TeamRun) run;
+                    for (Player p : tr.getPlayers()) {
+                        if (p != null && p.isOnline()) {
+                            p.sendMessage(org.bukkit.ChatColor.GOLD + "§l✨ LEGENDARY CHEST SPAWNED! ✨");
+                        }
+                    }
+                } else if (run instanceof com.eldor.roguecraft.models.Run) {
+                    Player p = ((com.eldor.roguecraft.models.Run) run).getPlayer();
+                    if (p != null && p.isOnline()) {
+                        p.sendMessage(org.bukkit.ChatColor.GOLD + "§l✨ LEGENDARY CHEST SPAWNED! ✨");
+                    }
+                }
+            }
         }
     }
     
@@ -426,16 +569,18 @@ public class GameListener implements Listener {
                 // Choose between unique power-ups (Magnet has higher chance: 30%, others 17.5% each)
                 double powerUpRoll = RANDOM.nextDouble();
                 String powerUpType;
-                if (powerUpRoll < 0.30) {
-                    powerUpType = "MAGNET"; // 30% chance for magnet
-                } else if (powerUpRoll < 0.475) {
-                    powerUpType = "SPEED_BOOST"; // 17.5% chance
-                } else if (powerUpRoll < 0.65) {
-                    powerUpType = "TIME_FREEZE"; // 17.5% chance
-                } else if (powerUpRoll < 0.825) {
-                    powerUpType = "NUCLEAR_STRIKE"; // 17.5% chance
+                if (powerUpRoll < 0.25) {
+                    powerUpType = "MAGNET"; // 25% chance for magnet
+                } else if (powerUpRoll < 0.40) {
+                    powerUpType = "SPEED_BOOST"; // 15% chance
+                } else if (powerUpRoll < 0.55) {
+                    powerUpType = "TIME_FREEZE"; // 15% chance
+                } else if (powerUpRoll < 0.70) {
+                    powerUpType = "NUCLEAR_STRIKE"; // 15% chance
+                } else if (powerUpRoll < 0.85) {
+                    powerUpType = "DOUBLE_XP"; // 15% chance
                 } else {
-                    powerUpType = "DOUBLE_XP"; // 17.5% chance
+                    powerUpType = "DOUBLE_GOLD"; // 15% chance
                 }
                 
                 ItemStack powerupItem = createUniquePowerUpItem(powerUpType);
@@ -479,7 +624,11 @@ public class GameListener implements Listener {
                     loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.3);
                     loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 15, 0.5, 0.5, 0.5, 0.2);
                     loc.getWorld().playSound(loc, org.bukkit.Sound.BLOCK_ENCHANTMENT_TABLE_USE, 0.5f, 1.2f);
-                } else { // DOUBLE_XP
+                } else if (powerUpType.equals("DOUBLE_XP")) {
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 25, 0.5, 0.5, 0.5, 0.3);
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.2);
+                    loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+                } else { // DOUBLE_GOLD
                     loc.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 25, 0.5, 0.5, 0.5, 0.3);
                     loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0.2);
                     loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
@@ -492,8 +641,8 @@ public class GameListener implements Listener {
         ItemStack item = new ItemStack(Material.EXPERIENCE_BOTTLE);
         ItemMeta meta = item.getItemMeta();
         
-        // Reduced XP amount (scaled way back since every mob drops one)
-        int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 5);
+        // Base XP amount per token (increased for faster leveling)
+        int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 7);
         int xpAmount = baseXpAmount * multiplier;
         
         // Different display based on multiplier
@@ -558,6 +707,21 @@ public class GameListener implements Listener {
             return; // Don't process if not in a run
         }
         
+        // Get pickup range stat
+        double pickupRange = 1.0;
+        if (teamRun != null) {
+            pickupRange = teamRun.getStat("pickup_range");
+        } else if (run != null) {
+            pickupRange = run.getStat("pickup_range");
+        }
+        
+        // Check distance - only allow pickup if within pickup range
+        double distance = player.getLocation().distance(item.getLocation());
+        if (distance > pickupRange) {
+            event.setCancelled(true); // Too far away, cancel pickup
+            return;
+        }
+        
         // Check for XP Token (regular, medium, or large)
         String customName = item.getCustomName();
         if (customName != null && customName.startsWith("XP_TOKEN")) {
@@ -579,7 +743,7 @@ public class GameListener implements Listener {
                 }
             }
             
-            int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 5);
+            int baseXpAmount = plugin.getConfigManager().getMainConfig().getInt("drops.xp-token.xp-amount", 7);
             int baseTokenXp = baseXpAmount * tokenMultiplier; // Token already has multiplier applied
             int totalBaseXp = baseTokenXp * stackSize; // Multiply by stack size
             
@@ -598,13 +762,14 @@ public class GameListener implements Listener {
                 // Update XP bar for all team members
                 for (Player p : teamRun.getPlayers()) {
                     if (p != null && p.isOnline()) {
-                        com.eldor.roguecraft.util.XPBar.updateXPBar(
+                        com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                             p,
                             teamRun.getExperience(),
                             teamRun.getExperienceToNextLevel(),
                             teamRun.getLevel(),
-                            teamRun.getWave()
-                        );
+                            teamRun.getWave(),
+                            teamRun.getCurrentGold()
+                        );;
                     }
                 }
                 // Show XP gain as Text Display above player instead of chat
@@ -621,12 +786,13 @@ public class GameListener implements Listener {
                 int finalXp = (int) (xpAmount * multiplier);
                 run.addExperience(finalXp);
                 
-                com.eldor.roguecraft.util.XPBar.updateXPBar(
+                com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
                     player,
                     run.getExperience(),
                     run.getExperienceToNextLevel(),
                     run.getLevel(),
-                    run.getWave()
+                    run.getWave(),
+                    run.getCurrentGold()
                 );
                 // Show XP gain as Text Display above player instead of chat
                 showXPTextDisplay(player, finalXp);
@@ -684,6 +850,9 @@ public class GameListener implements Listener {
                 } else if (powerUpType.equals("DOUBLE_XP")) {
                     // Apply Double XP (2x XP for 30 seconds)
                     applyDoubleXP(player, teamRun, run);
+                } else if (powerUpType.equals("DOUBLE_GOLD")) {
+                    // Apply Double Gold (2x gold for 30 seconds)
+                    applyDoubleGold(player, teamRun, run);
                 }
             }
             
@@ -757,11 +926,16 @@ public class GameListener implements Listener {
             name = "Magnet";
             description = "Pulls all nearby items to you for 20 seconds";
             color = ChatColor.BLUE;
-        } else { // DOUBLE_XP
+        } else if (powerUpType.equals("DOUBLE_XP")) {
             item = new ItemStack(Material.EXPERIENCE_BOTTLE);
             name = "Double XP";
             description = "Gain 2x XP for 30 seconds";
             color = ChatColor.GREEN;
+        } else { // DOUBLE_GOLD
+            item = new ItemStack(Material.GOLD_INGOT);
+            name = "Double Gold";
+            description = "Gain 2x gold for 30 seconds";
+            color = ChatColor.GOLD;
         }
         
         ItemMeta meta = item.getItemMeta();
@@ -933,12 +1107,8 @@ public class GameListener implements Listener {
                     Item item = (Item) entity;
                     String customName = item.getCustomName();
                     
-                    // Only pull our custom items
-                    if (customName != null && (
-                        customName.startsWith("XP_TOKEN") ||
-                        customName.equals("HEART_ITEM") ||
-                        customName.startsWith("POWERUP_ITEM_")
-                    )) {
+                    // Only pull XP tokens (magnets only pull XP tokens now)
+                    if (customName != null && customName.startsWith("XP_TOKEN")) {
                         // Pull item towards player with much stronger pull
                         Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
                         double distance = item.getLocation().distance(playerLoc);
@@ -1021,12 +1191,8 @@ public class GameListener implements Listener {
                     Item item = (Item) entity;
                     String customName = item.getCustomName();
                     
-                    // Only pull our custom items
-                    if (customName != null && (
-                        customName.startsWith("XP_TOKEN") ||
-                        customName.equals("HEART_ITEM") ||
-                        customName.startsWith("POWERUP_ITEM_")
-                    )) {
+                    // Only pull XP tokens (magnets only pull XP tokens now)
+                    if (customName != null && customName.startsWith("XP_TOKEN")) {
                         // Pull item towards player with much faster speed
                         Vector direction = playerLoc.toVector().subtract(item.getLocation().toVector()).normalize();
                         double distance = item.getLocation().distance(playerLoc);
@@ -1106,6 +1272,143 @@ public class GameListener implements Listener {
                 }
             }
         }, 30 * 20L); // 30 seconds
+    }
+    
+    private void applyDoubleGold(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run) {
+        // Check if player is in a run
+        if ((teamRun == null || !teamRun.isActive()) && (run == null || !run.isActive())) {
+            return;
+        }
+        
+        // Set metadata to indicate 2x gold is active
+        player.setMetadata("roguecraft_2x_gold", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        
+        // Notify players
+        if (teamRun != null && teamRun.isActive()) {
+            for (Player p : teamRun.getPlayers()) {
+                if (p != null && p.isOnline()) {
+                    p.sendMessage(ChatColor.GOLD + "✨ Double Gold activated! 2x gold for 30 seconds!");
+                    p.playSound(p.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+                    p.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, p.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
+                }
+            }
+        } else if (run != null && run.isActive()) {
+            player.sendMessage(ChatColor.GOLD + "✨ Double Gold activated! 2x gold for 30 seconds!");
+            player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+            player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, player.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
+        } else {
+            return;
+        }
+        
+        // Remove metadata after 30 seconds
+        final com.eldor.roguecraft.models.TeamRun finalTeamRun = teamRun;
+        final Run finalRun = run;
+        
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            player.removeMetadata("roguecraft_2x_gold", plugin);
+            
+            if (finalTeamRun != null && finalTeamRun.isActive()) {
+                for (Player p : finalTeamRun.getPlayers()) {
+                    if (p != null && p.isOnline()) {
+                        p.sendMessage(ChatColor.GRAY + "Double Gold effect expired.");
+                    }
+                }
+            } else if (finalRun != null && finalRun.isActive()) {
+                Player finalPlayer = finalRun.getPlayer();
+                if (finalPlayer != null && finalPlayer.isOnline()) {
+                    finalPlayer.sendMessage(ChatColor.GRAY + "Double Gold effect expired.");
+                }
+            }
+        }, 30 * 20L); // 30 seconds
+    }
+    
+    /**
+     * Accumulate gold for a player (will be displayed periodically)
+     */
+    private void accumulateGold(UUID playerId, int goldAmount) {
+        accumulatedGold.put(playerId, accumulatedGold.getOrDefault(playerId, 0) + goldAmount);
+    }
+    
+    /**
+     * Show gold gain as floating text above the player using ArmorStand
+     * This is called periodically to display accumulated gold
+     */
+    private void showGoldTextDisplayNow(Player player, int goldAmount) {
+        // Lower spawn height - just above player's head
+        Location loc = player.getLocation().add(0, 0.3, 0);
+        
+        try {
+            // Spawn invisible ArmorStand with custom name
+            org.bukkit.entity.ArmorStand armorStand = loc.getWorld().spawn(loc, org.bukkit.entity.ArmorStand.class, (stand) -> {
+                stand.setVisible(false);
+                stand.setGravity(false);
+                stand.setMarker(true);
+                stand.setSmall(true);
+                stand.setInvulnerable(true);
+                stand.setCollidable(false);
+                // Make text visible with bold and gold color
+                stand.setCustomName(ChatColor.GOLD + "" + ChatColor.BOLD + "💰 +" + goldAmount + " gold");
+                stand.setCustomNameVisible(true);
+                // Add glowing effect to make it more visible
+                stand.setGlowing(true);
+                // Add metadata to prevent mob naming system from interfering
+                stand.setMetadata("roguecraft_xp_display", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            });
+            
+            // Add particles around the text for extra visibility
+            player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, loc, 5, 0.3, 0.3, 0.3, 0.1);
+            
+            // Make it move upward and fade out
+            final org.bukkit.entity.ArmorStand finalStand = armorStand;
+            org.bukkit.scheduler.BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                if (!finalStand.isValid()) {
+                    return;
+                }
+                
+                Location currentLoc = finalStand.getLocation();
+                currentLoc.add(0, 0.05, 0); // Move upward slowly
+                finalStand.teleport(currentLoc);
+            }, 0L, 1L);
+            
+            // Remove after 2 seconds
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (finalStand.isValid()) {
+                    finalStand.remove();
+                }
+                if (task != null && !task.isCancelled()) {
+                    task.cancel();
+                }
+            }, 40L); // 2 seconds
+        } catch (Exception e) {
+            plugin.getLogger().warning("[GameListener] Failed to show gold text display: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Update boss bar to include gold information
+     */
+    private void updateBossBarWithGold(Player player, Object run) {
+        if (run instanceof com.eldor.roguecraft.models.TeamRun) {
+            com.eldor.roguecraft.models.TeamRun teamRun = (com.eldor.roguecraft.models.TeamRun) run;
+            com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                player,
+                teamRun.getExperience(),
+                teamRun.getExperienceToNextLevel(),
+                teamRun.getLevel(),
+                teamRun.getWave(),
+                teamRun.getCurrentGold()
+            );
+        } else if (run instanceof com.eldor.roguecraft.models.Run) {
+            com.eldor.roguecraft.models.Run soloRun = (com.eldor.roguecraft.models.Run) run;
+            com.eldor.roguecraft.util.XPBar.updateXPBarWithGold(
+                player,
+                soloRun.getExperience(),
+                soloRun.getExperienceToNextLevel(),
+                soloRun.getLevel(),
+                soloRun.getWave(),
+                soloRun.getCurrentGold()
+            );
+        }
     }
     
     /**
@@ -1406,5 +1709,13 @@ public class GameListener implements Listener {
                 snowball.removeMetadata("ice_shard_aoe", plugin);
             }
         }
+    }
+    
+    /**
+     * Clean up accumulated gold when player quits
+     */
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        accumulatedGold.remove(event.getPlayer().getUniqueId());
     }
 }

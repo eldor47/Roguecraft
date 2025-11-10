@@ -23,6 +23,8 @@ public class RoguecraftPlugin extends JavaPlugin {
     private ShrineManager shrineManager;
     private AuraManager auraManager;
     private SynergyManager synergyManager;
+    private GachaManager gachaManager;
+    private ChestManager chestManager;
 
     @Override
     public void onEnable() {
@@ -48,6 +50,8 @@ public class RoguecraftPlugin extends JavaPlugin {
             this.shrineManager = new ShrineManager(this);
             this.auraManager = new AuraManager(this);
             this.synergyManager = new SynergyManager(this);
+            this.gachaManager = new GachaManager(this);
+            this.chestManager = new ChestManager(this);
             this.gameManager = new GameManager(this);
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Failed to initialize managers", e);
@@ -59,6 +63,7 @@ public class RoguecraftPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.PlayerListener(this), this);
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.GameListener(this), this);
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.ShrineListener(this), this);
+        getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.ChestListener(this), this);
         
         // Register commands
         RoguecraftCommand commandHandler = new RoguecraftCommand(this);
@@ -97,6 +102,11 @@ public class RoguecraftPlugin extends JavaPlugin {
         // Cleanup synergies
         if (synergyManager != null) {
             synergyManager.cleanup();
+        }
+        
+        // Cleanup chests
+        if (chestManager != null) {
+            // Chest cleanup handled per-run in GameManager
         }
         
         getLogger().info("Roguecraft has been disabled!");
@@ -192,5 +202,13 @@ public class RoguecraftPlugin extends JavaPlugin {
     
     public SynergyManager getSynergyManager() {
         return synergyManager;
+    }
+    
+    public GachaManager getGachaManager() {
+        return gachaManager;
+    }
+    
+    public ChestManager getChestManager() {
+        return chestManager;
     }
 }

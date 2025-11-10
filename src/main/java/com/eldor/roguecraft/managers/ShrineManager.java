@@ -40,26 +40,89 @@ public class ShrineManager {
      * Spawn shrines for a team run
      */
     public void spawnShrinesForRun(UUID teamId, Arena arena) {
+        // Remove any existing shrines first (safety check to prevent duplicates)
+        removeShrinesForRun(teamId);
+        
         List<Shrine> shrines = new ArrayList<>();
+        Random random = new Random();
+        double minDistance = 8.0; // Minimum distance between shrines and chests (8 blocks)
         
-        // Spawn 4-6 random shrines around the arena (increased from 2-3)
-        int shrineCount = 4 + new Random().nextInt(3); // 4, 5, or 6 shrines
-        List<Shrine.ShrineType> availableTypes = new ArrayList<>(Arrays.asList(Shrine.ShrineType.values()));
-        Collections.shuffle(availableTypes);
+        // Get existing chests to check spacing
+        List<com.eldor.roguecraft.models.GachaChest> existingChests = plugin.getChestManager().getChestsForRun(teamId);
         
-        for (int i = 0; i < shrineCount && i < availableTypes.size(); i++) {
+        // Spawn 3-5 difficulty shrines
+        int difficultyCount = 3 + random.nextInt(3); // 3, 4, or 5 shrines
+        int difficultyAttempts = 0;
+        int maxDifficultyAttempts = difficultyCount * 10;
+        while (shrines.size() < difficultyCount && difficultyAttempts < maxDifficultyAttempts) {
+            difficultyAttempts++;
             Location spawnLoc = getRandomShrineLocation(arena);
-            if (spawnLoc != null) {
-                Shrine shrine = new Shrine(spawnLoc, availableTypes.get(i));
+            if (spawnLoc != null && isLocationValid(spawnLoc, shrines, existingChests, minDistance)) {
+                Shrine shrine = new Shrine(spawnLoc, Shrine.ShrineType.DIFFICULTY);
                 shrine.build();
-                shrine.setActive(true); // Ensure it starts as active
+                shrine.setActive(true);
+                shrines.add(shrine);
+                plugin.getLogger().info("[Shrine] Spawned " + shrine.getType().getName() + " at " + spawnLoc);
+            }
+        }
+        
+        // Spawn 1-2 boss shrines
+        int bossCount = 1 + random.nextInt(2); // 1 or 2 shrines
+        int bossAttempts = 0;
+        int maxBossAttempts = bossCount * 10;
+        while (shrines.size() < (difficultyCount + bossCount) && bossAttempts < maxBossAttempts) {
+            bossAttempts++;
+            Location spawnLoc = getRandomShrineLocation(arena);
+            if (spawnLoc != null && isLocationValid(spawnLoc, shrines, existingChests, minDistance)) {
+                Shrine shrine = new Shrine(spawnLoc, Shrine.ShrineType.BOSS);
+                shrine.build();
+                shrine.setActive(true);
+                shrines.add(shrine);
+                plugin.getLogger().info("[Shrine] Spawned " + shrine.getType().getName() + " at " + spawnLoc);
+            }
+        }
+        
+        // Spawn 4-6 regular power shrines (the ones that use channeling)
+        int powerCount = 4 + random.nextInt(3); // 4, 5, or 6 shrines
+        int powerAttempts = 0;
+        int maxPowerAttempts = powerCount * 10;
+        while (shrines.size() < (difficultyCount + bossCount + powerCount) && powerAttempts < maxPowerAttempts) {
+            powerAttempts++;
+            Location spawnLoc = getRandomShrineLocation(arena);
+            if (spawnLoc != null && isLocationValid(spawnLoc, shrines, existingChests, minDistance)) {
+                Shrine shrine = new Shrine(spawnLoc, Shrine.ShrineType.POWER);
+                shrine.build();
+                shrine.setActive(true);
                 shrines.add(shrine);
                 plugin.getLogger().info("[Shrine] Spawned " + shrine.getType().getName() + " at " + spawnLoc);
             }
         }
         
         arenaShrines.put(teamId, shrines);
-        plugin.getLogger().info("[Shrine] Spawned " + shrines.size() + " shrines for team " + teamId);
+        plugin.getLogger().info("[Shrine] Spawned " + shrines.size() + " shrines for team " + teamId + " (" + difficultyCount + " difficulty, " + bossCount + " boss, " + powerCount + " power)");
+    }
+    
+    /**
+     * Check if a location is valid (not too close to other shrines or chests)
+     */
+    private boolean isLocationValid(Location loc, List<Shrine> existingShrines, List<com.eldor.roguecraft.models.GachaChest> existingChests, double minDistance) {
+        // Check distance from existing shrines
+        for (Shrine shrine : existingShrines) {
+            if (loc.distance(shrine.getLocation()) < minDistance) {
+                return false;
+            }
+        }
+        
+        // Check distance from existing chests
+        if (existingChests != null) {
+            for (com.eldor.roguecraft.models.GachaChest chest : existingChests) {
+                if (loc.distance(chest.getLocation()) < minDistance) {
+                    return false;
+                }
+            }
+        }
+        
+        return true;
     }
     
     /**
@@ -67,12 +130,24 @@ public class ShrineManager {
      */
     public void removeShrinesForRun(UUID teamId) {
         List<Shrine> shrines = arenaShrines.remove(teamId);
-        if (shrines != null) {
+        if (shrines != null && !shrines.isEmpty()) {
             plugin.getLogger().info("[Shrine] Removing " + shrines.size() + " shrines for team " + teamId);
             for (Shrine shrine : shrines) {
                 if (shrine != null) {
                     shrine.remove();
                 }
+            }
+        } else {
+            // Also check if there are any shrines still in the map (cleanup any orphaned shrines)
+            List<Shrine> allShrines = arenaShrines.get(teamId);
+            if (allShrines != null && !allShrines.isEmpty()) {
+                plugin.getLogger().warning("[Shrine] Found orphaned shrines for team " + teamId + ", removing them");
+                for (Shrine shrine : allShrines) {
+                    if (shrine != null) {
+                        shrine.remove();
+                    }
+                }
+                arenaShrines.remove(teamId);
             }
         }
     }
@@ -101,6 +176,51 @@ public class ShrineManager {
             if (distance <= 3.0) {
                 plugin.getLogger().fine("[Shrine] Found shrine near " + player.getName() + 
                     " at distance " + String.format("%.2f", distance) + "m");
+                return shrine;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Get all shrines for a run
+     */
+    public List<Shrine> getShrinesForRun(UUID teamId) {
+        return new ArrayList<>(arenaShrines.getOrDefault(teamId, new ArrayList<>()));
+    }
+    
+    /**
+     * Get shrine at a specific location (checks if location is part of shrine blocks)
+     */
+    public Shrine getShrineAtLocation(UUID teamId, Location location) {
+        List<Shrine> shrines = arenaShrines.get(teamId);
+        if (shrines == null) {
+            return null;
+        }
+        
+        for (Shrine shrine : shrines) {
+            Location shrineLoc = shrine.getLocation();
+            
+            // Difficulty shrines: check exact block location (dark block) or skull block (1 block above)
+            if (shrine.getType() == Shrine.ShrineType.DIFFICULTY) {
+                int dx = location.getBlockX() - shrineLoc.getBlockX();
+                int dy = location.getBlockY() - shrineLoc.getBlockY();
+                int dz = location.getBlockZ() - shrineLoc.getBlockZ();
+                // Check if clicked the dark block (y=0) or skull block (y=1)
+                if (dx == 0 && dz == 0 && (dy == 0 || dy == 1)) {
+                    return shrine;
+                }
+                continue;
+            }
+            
+            // Other shrines: Check if location is within shrine area (3x3 base + pillar)
+            int dx = Math.abs(location.getBlockX() - shrineLoc.getBlockX());
+            int dz = Math.abs(location.getBlockZ() - shrineLoc.getBlockZ());
+            int dy = location.getBlockY() - shrineLoc.getBlockY();
+            
+            // Check if within 3x3 base area (x/z within 1 block, y within 0-3 blocks)
+            if (dx <= 1 && dz <= 1 && dy >= 0 && dy <= 3) {
                 return shrine;
             }
         }
@@ -169,7 +289,7 @@ public class ShrineManager {
         // Start progress task
         BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
             int ticks = 0;
-            final int requiredTicks = 20 * 4; // 4 seconds
+            final int requiredTicks = 20 * 2; // 2 seconds
             final UUID taskPlayerId = playerId;
             final Shrine taskShrine = shrine;
             final UUID taskTeamId = teamId;
@@ -242,7 +362,7 @@ public class ShrineManager {
                 if (ticks % 20 == 0 && !isCancelled.get()) {
                     int seconds = ticks / 20;
                     taskPlayer.spigot().sendMessage(ChatMessageType.ACTION_BAR, 
-                        new TextComponent(ChatColor.YELLOW + "Channeling... " + seconds + "/4"));
+                        new TextComponent(ChatColor.YELLOW + "Channeling... " + seconds + "/2"));
                 }
                 
                 if (ticks >= requiredTicks && !isCancelled.get()) {
@@ -400,9 +520,32 @@ public class ShrineManager {
     
     /**
      * Apply the actual shrine buff effect based on the effect type
+     * Now handles power-ups instead of temporary buffs
      */
     private void applyShrineBuffEffect(Player player, com.eldor.roguecraft.gui.ShrineGUI.ShrineBuff buff) {
         String effectType = buff.effectType;
+        
+        // Check if this is a power-up ID (new system)
+        if (effectType.startsWith("dynamic_") || effectType.startsWith("shrine_")) {
+            // Get the power-up from the buff object if available
+            com.eldor.roguecraft.models.PowerUp powerUp = buff.powerUp;
+            if (powerUp == null) {
+                // Fallback: try to get from registry
+                powerUp = plugin.getPowerUpManager().getPowerUp(effectType);
+            }
+            if (powerUp == null) {
+                // Last resort: create from ID
+                powerUp = createPowerUpFromId(effectType);
+            }
+            
+            if (powerUp != null) {
+                // Apply the power-up using the existing system
+                applyPowerUpFromShrine(player, powerUp);
+            }
+            return;
+        }
+        
+        // Legacy effect system (for backwards compatibility, though shouldn't be used now)
         String[] parts = effectType.split("_");
         
         if (effectType.startsWith("power_")) {
@@ -817,6 +960,99 @@ public class ShrineManager {
         public void setTask(BukkitTask task) {
             this.task = task;
         }
+    }
+    
+    /**
+     * Create a power-up from its ID (for dynamically generated power-ups)
+     */
+    private com.eldor.roguecraft.models.PowerUp createPowerUpFromId(String id) {
+        // This is a fallback - power-ups should be stored when generated
+        // For now, we'll need to regenerate it or store it differently
+        // For jump height, we can recreate it
+        if (id.startsWith("shrine_jump_height_")) {
+            // Extract jump height from stored metadata or recreate
+            // For simplicity, we'll use a default value and track it via stat
+            return null; // Will be handled via stat
+        }
+        return null;
+    }
+    
+    /**
+     * Apply a power-up from shrine selection
+     */
+    private void applyPowerUpFromShrine(Player player, com.eldor.roguecraft.models.PowerUp powerUp) {
+        if (powerUp == null) return;
+        
+        // Get player's run
+        com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player.getUniqueId());
+        com.eldor.roguecraft.models.Run run = null;
+        if (teamRun == null) {
+            run = plugin.getRunManager().getRun(player.getUniqueId());
+        }
+        
+        Object runObj = teamRun != null ? teamRun : run;
+        if (runObj == null) return;
+        
+        // Check if it's jump height
+        if (powerUp.getId().startsWith("shrine_jump_height_") || 
+            powerUp.getName().contains("Jump Height")) {
+            double jumpHeightValue = powerUp.getValue();
+            // Add jump height to stat
+            if (teamRun != null) {
+                teamRun.addStat("jump_height", jumpHeightValue);
+            } else if (run != null) {
+                run.addStat("jump_height", jumpHeightValue);
+            }
+            // Calculate slow falling level for message
+            int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeightValue / 0.5));
+            player.sendMessage(ChatColor.GREEN + "✦ " + powerUp.getName() + " activated! Jump height increased by +" + String.format("%.1f", jumpHeightValue) + " (Slow Falling " + slowFallingLevel + ")");
+            return;
+        }
+        
+        // For stat boosts, apply using the existing power-up system
+        if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.STAT_BOOST) {
+            String statName = extractStatName(powerUp.getId());
+            double value = powerUp.getValue();
+            
+            if (teamRun != null) {
+                teamRun.addStat(statName, value);
+                teamRun.addPowerUp(powerUp);
+            } else if (run != null) {
+                run.addStat(statName, value);
+                run.addPowerUp(powerUp);
+            }
+            
+            // Apply stat immediately if it's health or speed
+            if (statName.equals("health")) {
+                double health = teamRun != null ? teamRun.getStat("health") : run.getStat("health");
+                org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
+                org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
+                if (healthInstance != null) {
+                    healthInstance.setBaseValue(health);
+                    player.setHealth(Math.min(health, player.getHealth()));
+                }
+            } else if (statName.equals("speed")) {
+                double speed = teamRun != null ? teamRun.getStat("speed") : run.getStat("speed");
+                double baseSpeed = 0.1;
+                double newSpeed = Math.max(0.0, Math.min(1.0, baseSpeed * speed));
+                org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
+                org.bukkit.attribute.AttributeInstance speedInstance = player.getAttribute(speedAttr);
+                if (speedInstance != null) {
+                    speedInstance.setBaseValue(newSpeed);
+                }
+            }
+            
+            player.sendMessage(ChatColor.GREEN + "✦ " + powerUp.getName() + " activated!");
+        }
+    }
+    
+    /**
+     * Extract stat name from power-up ID
+     */
+    private String extractStatName(String id) {
+        // Remove "dynamic_" prefix and any trailing numbers
+        String statName = id.replaceAll("dynamic_", "").replaceAll("_\\d+", "");
+        return statName;
     }
 }
 

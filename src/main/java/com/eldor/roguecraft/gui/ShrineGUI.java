@@ -3,6 +3,7 @@ package com.eldor.roguecraft.gui;
 import com.eldor.roguecraft.RoguecraftPlugin;
 import com.eldor.roguecraft.models.Shrine;
 import com.eldor.roguecraft.models.TeamRun;
+import com.eldor.roguecraft.models.Run;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -26,6 +27,7 @@ public class ShrineGUI implements Listener {
     private final Shrine shrine;
     private final UUID teamId;
     private final Inventory inventory;
+    private List<ShrineBuff> generatedBuffs; // Store generated buffs
     
     public ShrineGUI(RoguecraftPlugin plugin, Player player, Shrine shrine, UUID teamId) {
         this.plugin = plugin;
@@ -68,62 +70,150 @@ public class ShrineGUI implements Listener {
         inventory.setItem(4, info);
         
         // Generate 3 variants of the shrine buff
-        List<ShrineBuff> buffs = generateBuffVariants();
+        generatedBuffs = generateBuffVariants();
         
-        inventory.setItem(10, createBuffItem(buffs.get(0), 0));
-        inventory.setItem(12, createBuffItem(buffs.get(1), 1));
-        inventory.setItem(14, createBuffItem(buffs.get(2), 2));
+        inventory.setItem(10, createBuffItem(generatedBuffs.get(0), 0));
+        inventory.setItem(12, createBuffItem(generatedBuffs.get(1), 1));
+        inventory.setItem(14, createBuffItem(generatedBuffs.get(2), 2));
     }
     
     private List<ShrineBuff> generateBuffVariants() {
         List<ShrineBuff> buffs = new ArrayList<>();
         Random random = new Random();
         
-        // Each shrine type has 3 variants with different tradeoffs
-        switch (shrine.getType()) {
-            case POWER:
-                buffs.add(new ShrineBuff("Overwhelming Power", "4x damage for 8 seconds", ChatColor.RED, Material.DIAMOND_SWORD, "power_4x_8s"));
-                buffs.add(new ShrineBuff("Sustained Power", "2.5x damage for 15 seconds", ChatColor.RED, Material.IRON_SWORD, "power_2.5x_15s"));
-                buffs.add(new ShrineBuff("Explosive Power", "3x damage + 50% AOE for 10 seconds", ChatColor.RED, Material.TNT, "power_3x_10s_aoe"));
-                break;
-            case SWIFTNESS:
-                buffs.add(new ShrineBuff("Lightning Speed", "3x speed for 10 seconds", ChatColor.AQUA, Material.FEATHER, "speed_3x_10s"));
-                buffs.add(new ShrineBuff("Marathon Runner", "2x speed for 20 seconds", ChatColor.AQUA, Material.LEATHER_BOOTS, "speed_2x_20s"));
-                buffs.add(new ShrineBuff("Blink", "Teleport to target + 2x speed for 12s", ChatColor.AQUA, Material.ENDER_PEARL, "blink_2x_12s"));
-                break;
-            case VITALITY:
-                buffs.add(new ShrineBuff("Full Restoration", "Instant full heal + regen III for 15s", ChatColor.GREEN, Material.GOLDEN_APPLE, "heal_full_regen_15s"));
-                buffs.add(new ShrineBuff("Overheal", "+100% max HP for 25 seconds", ChatColor.GREEN, Material.ENCHANTED_GOLDEN_APPLE, "overheal_25s"));
-                buffs.add(new ShrineBuff("Regeneration", "Heal 2 HP/sec for 30 seconds", ChatColor.GREEN, Material.GLISTERING_MELON_SLICE, "regen_30s"));
-                break;
-            case FORTUNE:
-                buffs.add(new ShrineBuff("Fortune's Favor", "5x XP for 25 seconds", ChatColor.YELLOW, Material.EXPERIENCE_BOTTLE, "xp_5x_25s"));
-                buffs.add(new ShrineBuff("Lucky Streak", "3x XP + double luck for 40s", ChatColor.YELLOW, Material.RABBIT_FOOT, "xp_3x_luck_40s"));
-                buffs.add(new ShrineBuff("Treasure Hunter", "4x XP + rare power-up on kill", ChatColor.YELLOW, Material.EMERALD, "xp_4x_rare"));
-                break;
-            case FURY:
-                buffs.add(new ShrineBuff("Critical Rage", "100% crit + 2x crit damage for 8s", ChatColor.GOLD, Material.BLAZE_POWDER, "crit_100_2x_8s"));
-                buffs.add(new ShrineBuff("Berserker", "75% crit + 50% attack speed for 12s", ChatColor.GOLD, Material.FIRE_CHARGE, "crit_75_atkspd_12s"));
-                buffs.add(new ShrineBuff("Precision", "80% crit + crits never miss for 10s", ChatColor.GOLD, Material.ARROW, "crit_80_10s"));
-                break;
-            case PROTECTION:
-                buffs.add(new ShrineBuff("Invulnerability", "Immune to all damage for 5 seconds", ChatColor.LIGHT_PURPLE, Material.TOTEM_OF_UNDYING, "invuln_5s"));
-                buffs.add(new ShrineBuff("Iron Skin", "75% damage reduction for 15 seconds", ChatColor.LIGHT_PURPLE, Material.IRON_CHESTPLATE, "reduce_75_15s"));
-                buffs.add(new ShrineBuff("Shield Bubble", "Absorb 50 damage over 20 seconds", ChatColor.LIGHT_PURPLE, Material.SHIELD, "shield_50_20s"));
-                break;
-            case CHAOS:
-                buffs.add(new ShrineBuff("Wild Magic", "3 random powerful buffs for 12s", ChatColor.DARK_PURPLE, Material.NETHER_STAR, "wild_magic_12s"));
-                buffs.add(new ShrineBuff("Chaos Storm", "Enemies take random debuffs for 15s", ChatColor.DARK_PURPLE, Material.DRAGON_BREATH, "chaos_storm_15s"));
-                buffs.add(new ShrineBuff("Gambler's Dream", "Roll 1-10x power for 10 seconds", ChatColor.DARK_PURPLE, Material.ENCHANTED_BOOK, "gambler_10s"));
-                break;
-            case TIME:
-                buffs.add(new ShrineBuff("Time Stop", "Freeze all enemies for 10 seconds", ChatColor.WHITE, Material.CLOCK, "timestop_10s"));
-                buffs.add(new ShrineBuff("Slow Time", "Enemies 90% slower for 20 seconds", ChatColor.WHITE, Material.COBWEB, "slow_90_20s"));
-                buffs.add(new ShrineBuff("Haste", "You move 50% faster + enemies 50% slower for 15s", ChatColor.WHITE, Material.SUGAR, "haste_50_15s"));
-                break;
+        // Get player's run info for level and luck
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player.getUniqueId());
+        Run run = null;
+        if (teamRun == null) {
+            run = plugin.getRunManager().getRun(player.getUniqueId());
+        }
+        
+        int playerLevel = 1;
+        double luck = 1.0;
+        if (teamRun != null) {
+            playerLevel = teamRun.getLevel();
+            luck = teamRun.getStat("luck");
+        } else if (run != null) {
+            playerLevel = run.getLevel();
+            luck = run.getStat("luck");
+        }
+        
+        // Generate 3 unique power-ups (excluding weapon-related ones)
+        Set<String> usedTypes = new HashSet<>();
+        int maxAttempts = 50;
+        int attempts = 0;
+        
+        while (buffs.size() < 3 && attempts < maxAttempts) {
+            attempts++;
+            double roll = random.nextDouble();
+            com.eldor.roguecraft.models.PowerUp powerUp = null;
+            String uniqueKey = null;
+            
+            // 8% chance for jump height (rarer pull)
+            if (roll < 0.08) {
+                powerUp = createJumpHeightPowerUp(playerLevel, luck);
+                uniqueKey = "jump_height";
+            } else {
+                // 92% chance for stat boost (damage, regen, crit, speed, health, etc.)
+                // Exclude regeneration if capped, but allow it for shrines
+                boolean excludeRegen = false;
+                if (teamRun != null) {
+                    excludeRegen = teamRun.getStat("regeneration") >= 4.0;
+                } else if (run != null) {
+                    excludeRegen = run.getStat("regeneration") >= 4.0;
+                }
+                
+                powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateStatBoost(playerLevel, luck, excludeRegen);
+                // Extract stat name for uniqueness
+                String statName = powerUp.getId().replaceAll("dynamic_", "").replaceAll("_\\d+", "");
+                uniqueKey = "stat_" + statName;
+            }
+            
+            // Only add if not already present and not null
+            if (powerUp != null && !usedTypes.contains(uniqueKey)) {
+                // Convert PowerUp to ShrineBuff
+                ChatColor color = getColorForRarity(powerUp.getRarity());
+                Material icon = powerUp.getIcon();
+                ShrineBuff buff = new ShrineBuff(
+                    powerUp.getName(),
+                    powerUp.getDescription(),
+                    color,
+                    icon,
+                    powerUp.getId(), // Store power-up ID as effectType
+                    powerUp // Store the actual power-up object
+                );
+                buffs.add(buff);
+                usedTypes.add(uniqueKey);
+            }
+        }
+        
+        // If we couldn't generate 3, fill with random stat boosts
+        while (buffs.size() < 3) {
+            com.eldor.roguecraft.models.PowerUp powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateStatBoost(playerLevel, luck, false);
+            ChatColor color = getColorForRarity(powerUp.getRarity());
+            ShrineBuff buff = new ShrineBuff(
+                powerUp.getName(),
+                powerUp.getDescription(),
+                color,
+                powerUp.getIcon(),
+                powerUp.getId()
+            );
+            buffs.add(buff);
         }
         
         return buffs;
+    }
+    
+    private com.eldor.roguecraft.models.PowerUp createJumpHeightPowerUp(int playerLevel, double luck) {
+        // Jump height power-up (rarer)
+        // Determine rarity based on luck (similar to DynamicPowerUp logic)
+        com.eldor.roguecraft.models.PowerUp.Rarity rarity;
+        double roll = new Random().nextDouble() * luck;
+        if (roll < 0.5) {
+            rarity = com.eldor.roguecraft.models.PowerUp.Rarity.COMMON;
+        } else if (roll < 0.8) {
+            rarity = com.eldor.roguecraft.models.PowerUp.Rarity.RARE;
+        } else if (roll < 0.95) {
+            rarity = com.eldor.roguecraft.models.PowerUp.Rarity.EPIC;
+        } else {
+            rarity = com.eldor.roguecraft.models.PowerUp.Rarity.LEGENDARY;
+        }
+        
+        // Jump height values: 0.5, 1.0, 1.5, 2.0 (provides slow falling effect)
+        double jumpHeight = 0.5; // Base: 0.5 jump height
+        if (rarity == com.eldor.roguecraft.models.PowerUp.Rarity.COMMON) {
+            jumpHeight = 0.5; // Level 1 slow falling
+        } else if (rarity == com.eldor.roguecraft.models.PowerUp.Rarity.RARE) {
+            jumpHeight = 1.0; // Level 2 slow falling
+        } else if (rarity == com.eldor.roguecraft.models.PowerUp.Rarity.EPIC) {
+            jumpHeight = 1.5; // Level 3 slow falling
+        } else if (rarity == com.eldor.roguecraft.models.PowerUp.Rarity.LEGENDARY) {
+            jumpHeight = 2.0; // Level 4 slow falling (max)
+        }
+        
+        // Calculate slow falling level for description
+        int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5));
+        
+        return new com.eldor.roguecraft.models.PowerUp(
+            "shrine_jump_height_" + System.currentTimeMillis(),
+            "Jump Height",
+            "Increase jump height by +" + String.format("%.1f", jumpHeight) + " (Slow Falling " + slowFallingLevel + ")",
+            rarity,
+            com.eldor.roguecraft.models.PowerUp.PowerUpType.STAT_BOOST,
+            org.bukkit.Material.FEATHER,
+            jumpHeight,
+            new String[0]
+        );
+    }
+    
+    private ChatColor getColorForRarity(com.eldor.roguecraft.models.PowerUp.Rarity rarity) {
+        switch (rarity) {
+            case COMMON: return ChatColor.GREEN;
+            case RARE: return ChatColor.BLUE;
+            case EPIC: return ChatColor.LIGHT_PURPLE;
+            case LEGENDARY: return ChatColor.GOLD;
+            default: return ChatColor.WHITE;
+        }
     }
     
     private ItemStack createBuffItem(ShrineBuff buff, int slot) {
@@ -175,8 +265,7 @@ public class ShrineGUI implements Listener {
         if (slot == 10 || slot == 12 || slot == 14) {
             // Get which buff variant was selected
             int buffIndex = (slot == 10) ? 0 : (slot == 12) ? 1 : 2;
-            List<ShrineBuff> buffs = generateBuffVariants();
-            ShrineBuff selectedBuff = buffs.get(buffIndex);
+            ShrineBuff selectedBuff = generatedBuffs.get(buffIndex);
             
             // Unregister this listener FIRST to prevent any re-triggering
             InventoryClickEvent.getHandlerList().unregister(this);
@@ -216,8 +305,12 @@ public class ShrineGUI implements Listener {
         Player clicker = (Player) event.getPlayer();
         if (!clicker.equals(player)) return;
         
-        // Prevent duplicate processing - check if already unregistered
-        if (!InventoryClickEvent.getHandlerList().getRegisteredListeners(plugin).contains(this)) {
+        // Prevent duplicate processing - use a flag to track if we've already processed
+        // Check if listeners are still registered (if not, we've already processed)
+        boolean clickListenerRegistered = InventoryClickEvent.getHandlerList().getRegisteredListeners(plugin).contains(this);
+        boolean closeListenerRegistered = InventoryCloseEvent.getHandlerList().getRegisteredListeners(plugin).contains(this);
+        
+        if (!clickListenerRegistered && !closeListenerRegistered) {
             // Already processed, skip
             return;
         }
@@ -231,10 +324,19 @@ public class ShrineGUI implements Listener {
         if (teamRun != null) {
             teamRun.setPlayerInGUI(player.getUniqueId(), false);
             
-            // Restart weapon auto-attack (only if not already running)
-            // WeaponManager.startAutoAttack already stops any existing task first
-            if (teamRun.getWeapon() != null) {
-                plugin.getWeaponManager().startAutoAttack(player, teamRun.getWeapon());
+            // Restart weapon auto-attack for all players if no one else is in GUI
+            if (!teamRun.hasAnyPlayerInGUI() && teamRun.getWeapon() != null) {
+                for (Player teamPlayer : teamRun.getPlayers()) {
+                    if (teamPlayer != null && teamPlayer.isOnline()) {
+                        plugin.getWeaponManager().startAutoAttack(teamPlayer, teamRun.getWeapon());
+                    }
+                }
+            }
+        } else {
+            // Solo run - check if there's a Run object
+            Run run = plugin.getRunManager().getRun(player.getUniqueId());
+            if (run != null && run.getWeapon() != null) {
+                plugin.getWeaponManager().startAutoAttack(player, run.getWeapon());
             }
         }
         
@@ -251,6 +353,7 @@ public class ShrineGUI implements Listener {
         public ChatColor color;
         public Material icon;
         public String effectType; // For applying the actual effect
+        public com.eldor.roguecraft.models.PowerUp powerUp; // Store the actual power-up object
         
         ShrineBuff(String name, String description, ChatColor color, Material icon, String effectType) {
             this.name = name;
@@ -258,6 +361,16 @@ public class ShrineGUI implements Listener {
             this.color = color;
             this.icon = icon;
             this.effectType = effectType;
+            this.powerUp = null;
+        }
+        
+        ShrineBuff(String name, String description, ChatColor color, Material icon, String effectType, com.eldor.roguecraft.models.PowerUp powerUp) {
+            this.name = name;
+            this.description = description;
+            this.color = color;
+            this.icon = icon;
+            this.effectType = effectType;
+            this.powerUp = powerUp;
         }
     }
 }

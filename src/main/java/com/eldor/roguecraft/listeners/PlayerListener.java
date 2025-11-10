@@ -205,19 +205,19 @@ public class PlayerListener implements Listener {
                             }
                         }
                         
-                        // Base resistance: 90% (10% damage taken)
-                        // Scale up resistance for overleveled players: +0.5% per level above 10
-                        // Example: Level 10 = 90%, Level 20 = 95%, Level 30 = 98% (capped)
-                        double baseResistance = 0.90; // 90% base
+                        // Base resistance: 50% (50% damage taken) - balanced middle ground
+                        // Scale up resistance for overleveled players: +1.5% per level above 10
+                        // Example: Level 10 = 50%, Level 20 = 65%, Level 30 = 80% (capped at 90%)
+                        double baseResistance = 0.50; // 50% base (balanced)
                         double levelScaling = 0.0;
                         
                         if (playerLevel > 10) {
-                            // Add 0.5% resistance per level above 10
-                            levelScaling = (playerLevel - 10) * 0.005; // 0.5% per level
+                            // Add 1.5% resistance per level above 10
+                            levelScaling = (playerLevel - 10) * 0.015; // 1.5% per level
                         }
                         
                         double totalResistance = baseResistance + levelScaling;
-                        totalResistance = Math.min(0.98, totalResistance); // Cap at 98% max
+                        totalResistance = Math.min(0.90, totalResistance); // Cap at 90% max
                         
                         // Apply resistance to damage
                         double originalDamage = event.getDamage();
@@ -514,6 +514,7 @@ public class PlayerListener implements Listener {
             }
         }
     }
+    
 }
 
 

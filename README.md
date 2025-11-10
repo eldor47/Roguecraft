@@ -188,6 +188,8 @@ All stats are tracked and applied in real-time:
 | **Luck** ☘️ | **Affects rarity rolls & bonus values** | Power-up GUI |
 | **XP Multiplier** 🧪 | Increases XP gained from kills | Boss bar progress |
 | **Difficulty** ☠️ | **Multiplies enemy difficulty (HP, damage, spawns)** | Power-up GUI |
+| **Jump Height** 🪶 | Applies slow falling effect (improves jump height) | Power-up GUI |
+| **Pickup Range** 📦 | Controls how far players can pick up items (default: 1 block) | Power-up GUI |
 
 ### How Luck Works
 
@@ -300,9 +302,10 @@ When you level up:
 
 ### XP Boss Bar
 - Displayed at top of screen
-- Shows: `Wave X | Level Y | XP: current/required` (wave only shown during active runs)
+- Shows: `Wave X | Level Y | XP: current/required | 💰 Gold: amount` (wave only shown during active runs)
 - Color-coded progress: Red (0-33%), Yellow (33-66%), Green (66-100%)
 - Flashes gold on level-up with "★ LEVEL UP! ★" message
+- Displays current gold amount
 - No more XP spam in chat!
 
 ### Health Action Bar
@@ -326,15 +329,31 @@ When you level up:
 - Restored to original settings on run end
 - No damage to players
 
+### Currency System
+
+**Gold System:**
+- Earn gold by killing mobs (base: 5, elite: 15, legendary: 50)
+- "2x Gold" power-up temporarily doubles gold gains
+- "Golden Glove" gacha item provides permanent gold multiplier
+- Gold displayed in boss bar and tracked per run
+- Gold text display accumulates over 1 second to reduce spam
+
+**Chest Costs:**
+- Chests cost gold to open (starts at 50 gold)
+- Cost increases exponentially (1.75x multiplier) after each purchase
+- All chests cost gold (including mob-dropped chests)
+- Legendary mob-dropped chests have 5% drop rate
+
 ### Custom Drop System
 Mobs in arenas drop custom items instead of normal Minecraft drops:
 
 **XP Tokens** ✨
-- 5% base drop chance (20% for elite mobs)
-- Grants bonus XP (default: 50 XP, configurable)
+- 7% base drop chance (20% for elite mobs)
+- Grants bonus XP (default: 7 XP, configurable)
 - XP multiplier stat applies to token XP
 - Pick up to instantly gain XP
 - Icon: Experience Bottle
+- **Pickup Range** stat controls how far you can pick up items (default: 1 block)
 
 **Healing Hearts** ❤
 - 3% base drop chance (13% for elite mobs)
@@ -529,17 +548,22 @@ spawns:
    - Player difficulty stat multiplies all enemy stats
 
 7. **Physical Shrines** - Power-up stations in the arena
-   - 2-3 shrines spawn randomly around the arena
-   - Stand near a shrine for 4 seconds to channel
-   - Choose from 3 powerful buff variants (damage, speed, healing, XP, crit, invulnerability, etc.)
+   - 4-6 Power Shrines spawn (channel for 2 seconds, choose from 3 random power-ups)
+   - 3-5 Difficulty Shrines spawn (right-click to increase difficulty by 5%)
+   - 1-2 Boss Shrines spawn (right-click to mark for extra boss during wave 20)
+   - All shrines maintain 8-block spacing from each other and chests
    - Each shrine can only be used once per run
    - Shrines visually dim after use
 
 8. **Wither Boss** - Final challenge on wave 20
    - A single Wither boss spawns at the start of wave 20
-   - Health scales with player level and difficulty stat
-   - Red elite outline, 2.5x size, high resistance, and aggro on players
-   - Defeat the Wither to complete the regular waves
+   - Health scales: 25 HP per level (reduced from 50)
+   - Difficulty multiplier: 0.3x (reduced from 0.5x)
+   - Player count scaling: +15% per player (reduced from 20%)
+   - Resistance: 50% base, +1.5% per level above 10, max 90% (at level 30: ~80%)
+   - Red elite outline, 2.5x size, and aggro on players
+   - Boss Shrines can spawn additional Wither bosses during wave 20
+   - Defeat the Wither(s) to complete the regular waves
    - After wave 20, infinite mode begins
 
 9. **Infinite Wave Mode** - After wave 20 (configurable)
@@ -761,41 +785,95 @@ After reaching the maximum wave (default: 20), **Infinite Mode** activates:
 ## Physical Shrine System
 
 ### How Shrines Work
-1. **Spawn**: 2-3 shrines spawn randomly around the arena when run starts
-2. **Channeling**: Stand within 3 blocks of a shrine for 4 seconds
-   - Progress shown on action bar: "Channeling... 1/4"
-   - You can move and attack during channeling (enemies still move)
-   - Moving too far cancels channeling
-3. **Selection**: GUI opens with 3 buff variants to choose from
+
+**Three Shrine Types:**
+
+1. **Power Shrines** (4-6 spawn) - Use channeling system
+   - Stand within 3 blocks for 2 seconds to channel
+   - Progress shown on action bar: "Channeling... 1/2"
+   - GUI opens with 3 random power-ups to choose from
    - Mobs and projectiles freeze during GUI selection
-4. **Activation**: Buff applies immediately after selection
-5. **One-time use**: Each shrine can only be used once per run
-6. **Visual feedback**: Used shrines dim (light changes to redstone lamp)
+   - Each shrine can only be used once per run
+   - Used shrines dim (light changes to redstone lamp)
 
-### Shrine Types & Buffs
+2. **Difficulty Shrines** (3-5 spawn) - Right-click to activate
+   - Simple dark block with skeleton skull on top
+   - Right-click the block or skull to activate
+   - Increases difficulty by 5% (makes enemies harder)
+   - One-time use per shrine
+   - Instant activation (no channeling)
 
-**8 Shrine Types:**
-1. **Shrine of Power** - Damage multipliers (4x for 8s, 2.5x for 15s, 3x + AOE)
-2. **Shrine of Swiftness** - Speed boosts (3x for 10s, 2x for 20s, Blink teleport)
-3. **Shrine of Vitality** - Healing (Full heal + regen, Overheal, Regen over time)
-4. **Shrine of Fortune (Treasure Hunter)** - XP multipliers:
-   - 5x XP for 25s (temporary)
-   - 3x XP + luck boost (temporary)
-   - 4x XP permanent + rare power-up on next kill (grants a rare stat boost power-up directly to your run)
-5. **Shrine of Fury** - Critical hits (100% crit, 75% + attack speed, 80% + precision)
-6. **Shrine of Protection** - Defense (Invulnerability, 75% reduction, Shield bubble)
-7. **Shrine of Chaos** - Random effects (Wild magic, Chaos storm, Gambler's dream)
-8. **Shrine of Time** - Enemy control (Time stop, Slow time, Haste)
+3. **Boss Shrines** (1-2 spawn) - Right-click to activate
+   - Epic structure with obsidian corners, decorative rings, and nether star
+   - Right-click to mark for extra boss spawn
+   - During wave 20, spawns an additional Wither boss
+   - One-time use per shrine
+   - Instant activation (no channeling)
 
-**Shrine Buffs:**
-- Applied via player metadata and attributes
-- Temporary effects (5-30 seconds depending on variant)
-- Stacks with other buffs (e.g., shrine damage + power-up damage)
+**Power Shrine Buffs:**
+- Offers 3 random stat boost power-ups (damage, speed, crit, regen, etc.)
+- Excludes weapon-related power-ups
+- Includes rare "Jump Height" power-up (applies slow falling effect)
+- Includes "Pickup Range" power-up (increases item pickup distance)
+- Buffs apply immediately after selection
 - Team members can use different shrines independently
+
+**Spacing:**
+- All shrines and chests maintain 8-block minimum spacing to prevent collisions
 
 ## Version History
 
-### Latest Updates (Today)
+### Latest Updates (Recent)
+- **Currency System** - Added run-specific gold currency system:
+  - Chests cost gold to open (starts at 50, scales exponentially by 1.75x per purchase)
+  - Mobs drop gold on kill (base: 5, elite: 3x, legendary: 10x)
+  - "2x Gold" power-up temporarily doubles gold gains
+  - "Golden Glove" gacha item provides permanent gold multiplier
+  - Gold displayed in boss bar: "Wave X | Level Y | XP: A / B | 💰 Gold: Z"
+  - Total gold collected tracked per run
+  - Gold text display accumulates over 1 second to reduce spam
+- **Gacha System Improvements**:
+  - Increased rare item chance: 8% → 15%
+  - Increased legendary item chance: 2% → 5%
+  - Reduced common item chance: 60% → 50%
+  - Scaled back health items: "Medkit" regen 35 → 2, "Oats" max HP 25 → 10
+  - Legendary chest drop rate: 30% → 5% from legendary mobs
+- **Shrine System Overhaul**:
+  - Simplified to single "Shrine of Power" type offering 3 random power-ups
+  - Power shrines use channeling (2 seconds, down from 4 seconds)
+  - Added "Difficulty Shrines" (3-5 spawn): Right-click to increase difficulty by 5% (dark block + skeleton skull)
+  - Added "Boss Shrines" (1-2 spawn): Right-click to mark for extra boss spawn during wave 20
+  - All shrine types spawn together (4-6 power, 3-5 difficulty, 1-2 boss)
+  - Shrines and chests now have 8-block minimum spacing to prevent collisions
+- **New Stats**:
+  - **Jump Height** - Replaces extra jumps, applies slow falling effect based on stat value
+  - **Pickup Range** - Controls how far players can pick up items (default: 1 block, improvable via shrines)
+  - Magnets now only pull XP tokens (not other items)
+- **XP Progression Adjustments**:
+  - Base XP to level up: 75 → 50
+  - XP scaling multipliers: Early levels 1.25x → 1.2x, Later levels 1.5x → 1.35x
+  - Base XP token amount: 5 → 7
+  - XP bar resets to 0 after level up
+- **Mob Scaling Improvements**:
+  - Slower scaling for early waves (waves 1-5: 5% HP per wave, waves 6-10: 10%, waves 11+: 15%)
+  - Reduced spawn counts for early waves (waves 1-5: 0.4x multiplier, waves 6-10: 0.7x, waves 11+: 1.0x)
+- **Wither Boss Balancing**:
+  - Health scaling: 50 HP/level → 25 HP/level
+  - Difficulty multiplier: 0.5x → 0.3x
+  - Player count scaling: 20% → 15% per player
+  - Resistance: 50% base, +1.5% per level above 10, max 90% (at level 30: ~80%)
+- **Visual Improvements**:
+  - Gold text display accumulates over 1 second periods to reduce spam
+  - Difficulty shrines: Simple dark block with skeleton skull on top
+  - Boss shrines: Epic structure with obsidian corners, decorative rings, and nether star
+- **Bug Fixes**:
+  - Fixed shrine GUI freezing game when closed without selecting
+  - Fixed run not starting after weapon selection
+  - Fixed duplicate shrine/chest spawning
+  - Fixed shrines not being removed after run ends
+  - Fixed boss shrine NullPointerException (replaced NETHER_STAR with END_ROD block)
+
+### Previous Updates
 - **TNT Lifesteal Fix** - Fixed lifesteal not working with TNT weapon by tracking explosion damage and applying lifesteal correctly
 - **Weapon Upgrade Preview** - GUI now shows predicted stat changes (damage, range, attack speed, projectiles, AOE) when hovering over weapon upgrade power-ups
 - **Power-Up Drop Rates** - Increased from 0.25% to 2% base chance, with magnet having 30% chance when a power-up drops
