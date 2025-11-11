@@ -4,6 +4,9 @@ import com.eldor.roguecraft.RoguecraftPlugin;
 import com.eldor.roguecraft.models.Arena;
 import com.eldor.roguecraft.models.GachaChest;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 
 import java.util.*;
 
@@ -23,7 +26,7 @@ public class ChestManager {
     
     /**
      * Spawn chests for a team run
-     * Spawns 8-10 chests randomly around the arena
+     * Spawns 12-15 chests randomly around the arena
      */
     public void spawnChestsForRun(UUID teamId, Arena arena) {
         // Remove any existing chests first (safety check to prevent duplicates)
@@ -31,8 +34,8 @@ public class ChestManager {
         
         List<GachaChest> chests = new ArrayList<>();
         
-        // Spawn 8-10 random chests around the arena
-        int chestCount = 8 + random.nextInt(3); // 8, 9, or 10 chests
+        // Spawn 12-15 random chests around the arena
+        int chestCount = 12 + random.nextInt(4); // 12, 13, 14, or 15 chests
         
         plugin.getLogger().info("[Chest] Attempting to spawn " + chestCount + " chests for team " + teamId);
         
@@ -86,7 +89,7 @@ public class ChestManager {
     
     /**
      * Get a random location for a chest within the arena
-     * Follows the same pattern as shrine spawning - just uses arena center Y
+     * Randomly distributed throughout the region, on the surface (not in caves)
      */
     private Location getRandomChestLocation(Arena arena) {
         if (arena.getCenter() == null) {
@@ -94,18 +97,136 @@ public class ChestManager {
             return null;
         }
         
-        // Spawn chests around the arena (similar to shrines)
+        World world = arena.getCenter().getWorld();
+        if (world == null) {
+            plugin.getLogger().warning("[Chest] Cannot spawn chest: World is null!");
+            return null;
+        }
+        
         Random random = new Random();
-        double angle = random.nextDouble() * 2 * Math.PI;
-        double distance = arena.getRadius() * 0.7; // 70% of radius
+        double radius = arena.getRadius();
         
-        double x = arena.getCenter().getX() + Math.cos(angle) * distance;
-        double z = arena.getCenter().getZ() + Math.sin(angle) * distance;
-        double y = arena.getCenter().getY(); // Use arena center Y directly, like shrines
+        // Generate random X/Z coordinates uniformly distributed within the arena radius
+        // Use rejection sampling to ensure uniform distribution in a circle
+        double x, z;
+        do {
+            x = arena.getCenter().getX() + (random.nextDouble() * 2 - 1) * radius;
+            z = arena.getCenter().getZ() + (random.nextDouble() * 2 - 1) * radius;
+        } while (Math.sqrt(Math.pow(x - arena.getCenter().getX(), 2) + Math.pow(z - arena.getCenter().getZ(), 2)) > radius);
         
-        Location chestLoc = new Location(arena.getCenter().getWorld(), x, y, z);
+        // Find surface Y coordinate
+        Location surfaceLoc = findSurfaceLocation(world, x, z, arena.getCenter().getY());
+        if (surfaceLoc == null) {
+            return null; // Could not find valid surface
+        }
         
-        return chestLoc;
+        return surfaceLoc;
+    }
+    
+    /**
+     * Find a surface location at the given X/Z coordinates
+     * Returns a location on solid ground with air above (not in a cave)
+     * 
+     * @param world The world to search in
+     * @param x X coordinate
+     * @param z Z coordinate
+     * @param startY Starting Y coordinate to search from (typically arena center Y)
+     * @return Surface location, or null if no valid surface found
+     */
+    private Location findSurfaceLocation(World world, double x, double z, double startY) {
+        // Ensure chunk is loaded
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        org.bukkit.Chunk chunk = world.getChunkAt(blockX >> 4, blockZ >> 4);
+        if (!chunk.isLoaded()) {
+            chunk.load();
+        }
+        
+        // Start searching from a reasonable height (arena center Y + some buffer)
+        // Search down first to find the ground
+        int searchY = (int) Math.floor(startY);
+        int minY = world.getMinHeight();
+        int maxY = world.getMaxHeight();
+        
+        // First, try to find solid ground below the start Y
+        Block block = world.getBlockAt(blockX, searchY, blockZ);
+        Block below = searchY > minY ? world.getBlockAt(blockX, searchY - 1, blockZ) : null;
+        
+        // If we're in air, search down for solid ground
+        if (block.getType() == Material.AIR && below != null && below.getType() != Material.AIR) {
+            // Already on surface, but verify it's not in a cave
+            if (isOnSurface(world, x, searchY, z)) {
+                return new Location(world, x, searchY, z);
+            }
+        }
+        
+        // Search downward for solid ground
+        for (int y = searchY; y >= minY + 5; y--) {
+            block = world.getBlockAt(blockX, y, blockZ);
+            Block blockAbove = y < maxY - 1 ? world.getBlockAt(blockX, y + 1, blockZ) : null;
+            
+            // Found solid ground with air above
+            if (block.getType().isSolid() && blockAbove != null && blockAbove.getType() == Material.AIR) {
+                // Verify it's on the surface (not in a cave)
+                if (isOnSurface(world, x, y + 1, z)) {
+                    return new Location(world, x, y + 1, z);
+                }
+            }
+        }
+        
+        // If we didn't find anything below, try searching upward (in case we started too low)
+        for (int y = searchY + 1; y <= Math.min(startY + 20, maxY - 5); y++) {
+            block = world.getBlockAt(blockX, y, blockZ);
+            Block blockBelow = y > minY ? world.getBlockAt(blockX, y - 1, blockZ) : null;
+            
+            // Found air with solid ground below
+            if (block.getType() == Material.AIR && blockBelow != null && blockBelow.getType().isSolid()) {
+                // Verify it's on the surface (not in a cave)
+                if (isOnSurface(world, x, y, z)) {
+                    return new Location(world, x, y, z);
+                }
+            }
+        }
+        
+        // Could not find valid surface
+        return null;
+    }
+    
+    /**
+     * Check if a location is on the surface (not in a cave)
+     * Verifies that there's enough air above (at least 3 blocks) to ensure it's not underground
+     * 
+     * @param world The world
+     * @param x X coordinate
+     * @param y Y coordinate (should be the air block above ground)
+     * @param z Z coordinate
+     * @return true if on surface, false if in a cave
+     */
+    private boolean isOnSurface(World world, double x, int y, double z) {
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        
+        // Ensure chunk is loaded
+        org.bukkit.Chunk chunk = world.getChunkAt(blockX >> 4, blockZ >> 4);
+        if (!chunk.isLoaded()) {
+            chunk.load();
+        }
+        
+        int maxY = world.getMaxHeight();
+        
+        // Check that there's at least 10 blocks of air above (ensures it's on surface, not in cave)
+        int airBlocks = 0;
+        for (int checkY = y; checkY < Math.min(y + 12, maxY); checkY++) {
+            Block checkBlock = world.getBlockAt(blockX, checkY, blockZ);
+            if (checkBlock.getType() == Material.AIR) {
+                airBlocks++;
+            } else {
+                break; // Hit a solid block, stop counting
+            }
+        }
+        
+        // Need at least 10 blocks of air above to be considered "on surface"
+        return airBlocks >= 10;
     }
     
     /**

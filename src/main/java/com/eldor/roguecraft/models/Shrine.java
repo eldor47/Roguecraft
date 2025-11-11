@@ -260,16 +260,21 @@ public class Shrine {
             shrineLoc.getChunk().load();
         }
         
+        // Track all modified chunks for lighting refresh
+        Set<org.bukkit.Chunk> modifiedChunks = new HashSet<>();
+        
         // Remove all tracked blocks
         for (Block block : blocks) {
             if (block != null && block.getWorld() != null) {
                 // Ensure chunk is loaded
-                if (!block.getChunk().isLoaded()) {
-                    block.getChunk().load();
+                org.bukkit.Chunk chunk = block.getChunk();
+                if (!chunk.isLoaded()) {
+                    chunk.load();
                 }
                 block.setType(Material.AIR);
-                // Force light update to remove dark spots
-                block.getWorld().refreshChunk(block.getChunk().getX(), block.getChunk().getZ());
+                // Update block state to fix lighting
+                block.getState().update(false, false);
+                modifiedChunks.add(chunk);
             }
         }
         
@@ -287,16 +292,21 @@ public class Shrine {
                     Material darkMat = darkBlock.getType();
                     if (darkMat == Material.BLACK_CONCRETE || darkMat == Material.BLACK_TERRACOTTA) {
                         darkBlock.setType(Material.AIR);
+                        darkBlock.getState().update(false, false);
+                        modifiedChunks.add(darkBlock.getChunk());
                     }
                 }
                 // Remove the skull block
                 Block skullBlock = shrineLoc.clone().add(0, 1, 0).getBlock();
                 if (skullBlock != null) {
-                    if (!skullBlock.getChunk().isLoaded()) {
-                        skullBlock.getChunk().load();
+                    org.bukkit.Chunk skullChunk = skullBlock.getChunk();
+                    if (!skullChunk.isLoaded()) {
+                        skullChunk.load();
                     }
                     if (skullBlock.getType() == Material.SKELETON_SKULL) {
                         skullBlock.setType(Material.AIR);
+                        skullBlock.getState().update(false, false);
+                        modifiedChunks.add(skullChunk);
                     }
                 }
             } else {
@@ -318,6 +328,8 @@ public class Shrine {
                         if (isShrineMaterial(mat) || mat == Material.OBSIDIAN || mat == Material.BLACKSTONE || 
                             mat == Material.DARK_OAK_FENCE || mat == Material.SOUL_TORCH || mat == Material.END_ROD) {
                             block.setType(Material.AIR);
+                            block.getState().update(false, false);
+                            modifiedChunks.add(block.getChunk());
                         }
                     }
                 }
@@ -334,6 +346,8 @@ public class Shrine {
                     Material mat = block.getType();
                     if (isShrineMaterial(mat) || isLightMaterial(mat) || mat == Material.END_ROD) {
                         block.setType(Material.AIR);
+                        block.getState().update(false, false);
+                        modifiedChunks.add(block.getChunk());
                     }
                     
                     // For boss shrine, also check decorative rings
@@ -350,6 +364,8 @@ public class Shrine {
                                 Material ringMat = ringBlock.getType();
                                 if (ringMat == Material.SOUL_TORCH || ringMat == Material.BLACKSTONE) {
                                     ringBlock.setType(Material.AIR);
+                                    ringBlock.getState().update(false, false);
+                                    modifiedChunks.add(ringBlock.getChunk());
                                 }
                             }
                         }
@@ -357,8 +373,14 @@ public class Shrine {
                 }
             }
             
-            // Force chunk refresh for the entire shrine area
-            shrineLoc.getWorld().refreshChunk(shrineLoc.getChunk().getX(), shrineLoc.getChunk().getZ());
+            // Refresh lighting for all modified chunks to fix dark particles
+            for (org.bukkit.Chunk chunk : modifiedChunks) {
+                try {
+                    world.refreshChunk(chunk.getX(), chunk.getZ());
+                } catch (Exception e) {
+                    // Some server implementations may not support refreshChunk, that's okay
+                }
+            }
         }
         
         blocks.clear();

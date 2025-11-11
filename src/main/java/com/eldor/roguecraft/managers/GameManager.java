@@ -10,7 +10,10 @@ import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
@@ -1530,8 +1533,15 @@ public class GameManager {
         legendary.setMetadata("legendary_particle_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
     }
 
+    /**
+     * Get a random spawn location for mobs within the arena
+     * Ensures mobs spawn on solid ground (not in air)
+     */
     private Location getRandomSpawnLocation(Arena arena) {
         if (arena.getCenter() == null) return null;
+
+        World world = arena.getCenter().getWorld();
+        if (world == null) return null;
 
         Random random = new Random();
         
@@ -1545,41 +1555,89 @@ public class GameManager {
         double angle = random.nextDouble() * 2 * Math.PI;
         double x = arena.getCenter().getX() + Math.cos(angle) * distance;
         double z = arena.getCenter().getZ() + Math.sin(angle) * distance;
-        double y = arena.getCenter().getY();
-
-        Location spawnLoc = new Location(arena.getCenter().getWorld(), x, y, z);
         
-        // Find a safe Y position (not in air or solid block)
-        org.bukkit.World world = spawnLoc.getWorld();
-        if (world != null) {
-            org.bukkit.block.Block block = world.getBlockAt(spawnLoc);
-            org.bukkit.block.Block below = world.getBlockAt(spawnLoc.clone().add(0, -1, 0));
+        // Find surface Y coordinate (on solid ground)
+        Location surfaceLoc = findMobSpawnSurface(world, x, z, arena.getCenter().getY());
+        if (surfaceLoc == null) {
+            // If we can't find a surface, fall back to arena center Y
+            return new Location(world, x, arena.getCenter().getY(), z);
+        }
+        
+        return surfaceLoc;
+    }
+    
+    /**
+     * Find a surface location for mob spawning at the given X/Z coordinates
+     * Returns a location on solid ground (not in air)
+     * 
+     * @param world The world to search in
+     * @param x X coordinate
+     * @param z Z coordinate
+     * @param startY Starting Y coordinate to search from (typically arena center Y)
+     * @return Surface location on solid ground, or null if no valid surface found
+     */
+    private Location findMobSpawnSurface(World world, double x, double z, double startY) {
+        // Ensure chunk is loaded
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        org.bukkit.Chunk chunk = world.getChunkAt(blockX >> 4, blockZ >> 4);
+        if (!chunk.isLoaded()) {
+            chunk.load();
+        }
+        
+        // Start searching from a reasonable height (arena center Y)
+        // Search down first to find the ground
+        int searchY = (int) Math.floor(startY);
+        int minY = world.getMinHeight();
+        int maxY = world.getMaxHeight();
+        
+        // Search downward for solid ground with air above (mobs need to stand on solid blocks)
+        for (int y = searchY; y >= minY + 5; y--) {
+            Block block = world.getBlockAt(blockX, y, blockZ);
+            Block blockAbove = y < maxY - 1 ? world.getBlockAt(blockX, y + 1, blockZ) : null;
             
-            // If spawn location is in air, find ground
-            if (block.getType() == org.bukkit.Material.AIR && below.getType() != org.bukkit.Material.AIR) {
-                // Already on ground
-            } else if (block.getType() == org.bukkit.Material.AIR) {
-                // Find ground below
-                for (int i = 1; i <= 10; i++) {
-                    org.bukkit.block.Block check = world.getBlockAt(spawnLoc.clone().add(0, -i, 0));
-                    if (check.getType() != org.bukkit.Material.AIR) {
-                        spawnLoc.setY(spawnLoc.getY() - i + 1);
+            // Found solid ground with air above - perfect for mob spawning
+            if (block.getType().isSolid() && blockAbove != null && blockAbove.getType() == Material.AIR) {
+                // Verify there's enough space for the mob (at least 10 blocks of air above ground to ensure surface)
+                boolean enoughAir = true;
+                for (int checkY = y + 1; checkY < Math.min(y + 11, maxY); checkY++) {
+                    Block checkBlock = world.getBlockAt(blockX, checkY, blockZ);
+                    if (checkBlock.getType() != Material.AIR) {
+                        enoughAir = false;
                         break;
                     }
                 }
-            } else if (block.getType().isSolid()) {
-                // Find air above
-                for (int i = 1; i <= 10; i++) {
-                    org.bukkit.block.Block check = world.getBlockAt(spawnLoc.clone().add(0, i, 0));
-                    if (check.getType() == org.bukkit.Material.AIR) {
-                        spawnLoc.setY(spawnLoc.getY() + i);
-                        break;
-                    }
+                if (enoughAir) {
+                    // Spawn mob 1 block above the solid ground
+                    return new Location(world, x, y + 1, z);
                 }
             }
         }
         
-        return spawnLoc;
+        // If we didn't find anything below, try searching upward (in case we started too low)
+        for (int y = searchY + 1; y <= Math.min(startY + 20, maxY - 5); y++) {
+            Block block = world.getBlockAt(blockX, y, blockZ);
+            Block blockBelow = y > minY ? world.getBlockAt(blockX, y - 1, blockZ) : null;
+            
+            // Found air with solid ground below
+            if (block.getType() == Material.AIR && blockBelow != null && blockBelow.getType().isSolid()) {
+                // Verify there's enough space (at least 10 blocks of air above to ensure surface)
+                boolean enoughAir = true;
+                for (int checkY = y; checkY < Math.min(y + 10, maxY); checkY++) {
+                    Block checkBlock = world.getBlockAt(blockX, checkY, blockZ);
+                    if (checkBlock.getType() != Material.AIR) {
+                        enoughAir = false;
+                        break;
+                    }
+                }
+                if (enoughAir) {
+                    return new Location(world, x, y, z);
+                }
+            }
+        }
+        
+        // Could not find valid surface
+        return null;
     }
     
     /**
@@ -2385,6 +2443,9 @@ public class GameManager {
                     player.setFoodLevel(20);
                     player.setSaturation(20.0f);
                     player.setExhaustion(0.0f);
+                    
+                    // Clean up all gacha item metadata
+                    cleanupGachaMetadata(player);
                 }
             }
         } else if (run instanceof Run) {
@@ -2404,6 +2465,9 @@ public class GameManager {
                 
                 // Reset health and speed to default
                 resetPlayerAttributes(player);
+                
+                // Clean up all gacha item metadata
+                cleanupGachaMetadata(player);
             }
         }
         
@@ -2603,11 +2667,15 @@ public class GameManager {
                             (mat.name().contains("CONCRETE") && (mat.name().contains("BLACK") || mat.name().contains("GRAY"))) ||
                             (mat.name().contains("TERRACOTTA") && (mat.name().contains("BLACK") || mat.name().contains("GRAY")))) {
                             // Ensure chunk is loaded
-                            if (!block.getChunk().isLoaded()) {
-                                block.getChunk().load();
+                            org.bukkit.Chunk chunk = block.getChunk();
+                            if (!chunk.isLoaded()) {
+                                chunk.load();
                             }
                             block.setType(org.bukkit.Material.AIR);
                             removedBlocks++;
+                            
+                            // Update lighting for this block to fix dark particles
+                            world.getBlockAt(block.getLocation()).getState().update(false, false);
                         }
                     }
                 }
@@ -2615,6 +2683,36 @@ public class GameManager {
             
             if (removedBlocks > 0) {
                 plugin.getLogger().info("[GameManager] Removed " + removedBlocks + " shrine blocks during aggressive cleanup");
+                
+                // Refresh lighting for all affected chunks to fix dark particles
+                // Get all unique chunks that were modified
+                Set<org.bukkit.Chunk> modifiedChunks = new HashSet<>();
+                int refreshRadius = (int) Math.ceil(arenaRadius) + 5;
+                for (int x = centerX - refreshRadius; x <= centerX + refreshRadius; x += 16) {
+                    for (int z = centerZ - refreshRadius; z <= centerZ + refreshRadius; z += 16) {
+                        double distance = Math.sqrt(Math.pow(x - centerX, 2) + Math.pow(z - centerZ, 2));
+                        if (distance <= arenaRadius + 10) {
+                            org.bukkit.Chunk chunk = world.getChunkAt(x >> 4, z >> 4);
+                            if (!chunk.isLoaded()) {
+                                chunk.load();
+                            }
+                            modifiedChunks.add(chunk);
+                        }
+                    }
+                }
+                
+                // Refresh lighting for all modified chunks
+                for (org.bukkit.Chunk chunk : modifiedChunks) {
+                    try {
+                        // Refresh chunk lighting to fix dark particles
+                        world.refreshChunk(chunk.getX(), chunk.getZ());
+                    } catch (Exception e) {
+                        // Some server implementations may not support refreshChunk, that's okay
+                        plugin.getLogger().fine("Could not refresh chunk lighting: " + e.getMessage());
+                    }
+                }
+                
+                plugin.getLogger().info("[GameManager] Refreshed lighting for " + modifiedChunks.size() + " chunks");
             }
         }
         
@@ -2762,6 +2860,44 @@ public class GameManager {
         org.bukkit.attribute.AttributeInstance armorInstance = player.getAttribute(armorAttr);
         if (armorInstance != null) {
             armorInstance.setBaseValue(0.0);
+        }
+    }
+    
+    /**
+     * Clean up all gacha item metadata from a player
+     * This ensures gacha items don't carry over to new runs
+     */
+    private void cleanupGachaMetadata(Player player) {
+        if (player == null) return;
+        
+        // List of all known gacha item metadata keys
+        String[] gachaMetadataKeys = {
+            "gacha_item_big_bonk",
+            "gacha_item_boss_buster",
+            "gacha_item_moldy_cheese",
+            "gacha_item_ice_crystal",
+            "gacha_item_cursed_doll",
+            "gacha_item_spicy_meatball",
+            "gacha_item_power_gloves",
+            "gacha_gold_multiplier",
+            "gacha_attack_speed_battery"
+        };
+        
+        // Remove all known gacha metadata
+        for (String key : gachaMetadataKeys) {
+            player.removeMetadata(key, plugin);
+        }
+        
+        // Also try to remove any other gacha_item_* metadata by checking all registered item IDs
+        // Get all registered gacha items from GachaManager
+        java.util.Collection<com.eldor.roguecraft.models.GachaItem> allItems = plugin.getGachaManager().getAllItems();
+        if (allItems != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : allItems) {
+                if (item != null) {
+                    String metadataKey = "gacha_item_" + item.getId();
+                    player.removeMetadata(metadataKey, plugin);
+                }
+            }
         }
     }
     

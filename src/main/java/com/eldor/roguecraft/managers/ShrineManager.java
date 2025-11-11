@@ -9,6 +9,9 @@ import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
@@ -50,8 +53,8 @@ public class ShrineManager {
         // Get existing chests to check spacing
         List<com.eldor.roguecraft.models.GachaChest> existingChests = plugin.getChestManager().getChestsForRun(teamId);
         
-        // Spawn 3-5 difficulty shrines
-        int difficultyCount = 3 + random.nextInt(3); // 3, 4, or 5 shrines
+        // Spawn 5-7 difficulty shrines
+        int difficultyCount = 5 + random.nextInt(3); // 5, 6, or 7 shrines
         int difficultyAttempts = 0;
         int maxDifficultyAttempts = difficultyCount * 10;
         while (shrines.size() < difficultyCount && difficultyAttempts < maxDifficultyAttempts) {
@@ -66,8 +69,8 @@ public class ShrineManager {
             }
         }
         
-        // Spawn 1-2 boss shrines
-        int bossCount = 1 + random.nextInt(2); // 1 or 2 shrines
+        // Spawn 2-3 boss shrines
+        int bossCount = 2 + random.nextInt(2); // 2 or 3 shrines
         int bossAttempts = 0;
         int maxBossAttempts = bossCount * 10;
         while (shrines.size() < (difficultyCount + bossCount) && bossAttempts < maxBossAttempts) {
@@ -82,8 +85,8 @@ public class ShrineManager {
             }
         }
         
-        // Spawn 4-6 regular power shrines (the ones that use channeling)
-        int powerCount = 4 + random.nextInt(3); // 4, 5, or 6 shrines
+        // Spawn 6-8 regular power shrines (the ones that use channeling)
+        int powerCount = 6 + random.nextInt(3); // 6, 7, or 8 shrines
         int powerAttempts = 0;
         int maxPowerAttempts = powerCount * 10;
         while (shrines.size() < (difficultyCount + bossCount + powerCount) && powerAttempts < maxPowerAttempts) {
@@ -831,25 +834,147 @@ public class ShrineManager {
         return activeChanneling.containsKey(playerId);
     }
     
+    /**
+     * Get a random location for a shrine within the arena
+     * Randomly distributed throughout the region, on the surface (not in caves)
+     */
     private Location getRandomShrineLocation(Arena arena) {
         if (arena.getCenter() == null) {
             plugin.getLogger().warning("[Shrine] Cannot spawn shrine: Arena center is null!");
             return null;
         }
         
-        // Spawn shrines on the edge of the arena (safer locations)
+        World world = arena.getCenter().getWorld();
+        if (world == null) {
+            plugin.getLogger().warning("[Shrine] Cannot spawn shrine: World is null!");
+            return null;
+        }
+        
         Random random = new Random();
-        double angle = random.nextDouble() * 2 * Math.PI;
-        double distance = arena.getRadius() * 0.7; // 70% of radius
+        double radius = arena.getRadius();
         
-        double x = arena.getCenter().getX() + Math.cos(angle) * distance;
-        double z = arena.getCenter().getZ() + Math.sin(angle) * distance;
-        double y = arena.getCenter().getY();
+        // Generate random X/Z coordinates uniformly distributed within the arena radius
+        // Use rejection sampling to ensure uniform distribution in a circle
+        double x, z;
+        do {
+            x = arena.getCenter().getX() + (random.nextDouble() * 2 - 1) * radius;
+            z = arena.getCenter().getZ() + (random.nextDouble() * 2 - 1) * radius;
+        } while (Math.sqrt(Math.pow(x - arena.getCenter().getX(), 2) + Math.pow(z - arena.getCenter().getZ(), 2)) > radius);
         
-        Location shrineLoc = new Location(arena.getCenter().getWorld(), x, y, z);
-        plugin.getLogger().info("[Shrine] Spawning shrine at " + shrineLoc + " (arena center: " + arena.getCenter() + ")");
+        // Find surface Y coordinate
+        Location surfaceLoc = findSurfaceLocation(world, x, z, arena.getCenter().getY());
+        if (surfaceLoc == null) {
+            return null; // Could not find valid surface
+        }
         
-        return shrineLoc;
+        plugin.getLogger().info("[Shrine] Spawning shrine at " + surfaceLoc + " (arena center: " + arena.getCenter() + ")");
+        return surfaceLoc;
+    }
+    
+    /**
+     * Find a surface location at the given X/Z coordinates
+     * Returns a location on solid ground with air above (not in a cave)
+     * 
+     * @param world The world to search in
+     * @param x X coordinate
+     * @param z Z coordinate
+     * @param startY Starting Y coordinate to search from (typically arena center Y)
+     * @return Surface location, or null if no valid surface found
+     */
+    private Location findSurfaceLocation(World world, double x, double z, double startY) {
+        // Ensure chunk is loaded
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        org.bukkit.Chunk chunk = world.getChunkAt(blockX >> 4, blockZ >> 4);
+        if (!chunk.isLoaded()) {
+            chunk.load();
+        }
+        
+        // Start searching from a reasonable height (arena center Y + some buffer)
+        // Search down first to find the ground
+        int searchY = (int) Math.floor(startY);
+        int minY = world.getMinHeight();
+        int maxY = world.getMaxHeight();
+        
+        // First, try to find solid ground below the start Y
+        Block block = world.getBlockAt(blockX, searchY, blockZ);
+        Block below = searchY > minY ? world.getBlockAt(blockX, searchY - 1, blockZ) : null;
+        
+        // If we're in air, search down for solid ground
+        if (block.getType() == Material.AIR && below != null && below.getType() != Material.AIR) {
+            // Already on surface, but verify it's not in a cave
+            if (isOnSurface(world, x, searchY, z)) {
+                return new Location(world, x, searchY, z);
+            }
+        }
+        
+        // Search downward for solid ground
+        for (int y = searchY; y >= minY + 5; y--) {
+            block = world.getBlockAt(blockX, y, blockZ);
+            Block blockAbove = y < maxY - 1 ? world.getBlockAt(blockX, y + 1, blockZ) : null;
+            
+            // Found solid ground with air above
+            if (block.getType().isSolid() && blockAbove != null && blockAbove.getType() == Material.AIR) {
+                // Verify it's on the surface (not in a cave)
+                if (isOnSurface(world, x, y + 1, z)) {
+                    return new Location(world, x, y + 1, z);
+                }
+            }
+        }
+        
+        // If we didn't find anything below, try searching upward (in case we started too low)
+        for (int y = searchY + 1; y <= Math.min(startY + 20, maxY - 5); y++) {
+            block = world.getBlockAt(blockX, y, blockZ);
+            Block blockBelow = y > minY ? world.getBlockAt(blockX, y - 1, blockZ) : null;
+            
+            // Found air with solid ground below
+            if (block.getType() == Material.AIR && blockBelow != null && blockBelow.getType().isSolid()) {
+                // Verify it's on the surface (not in a cave)
+                if (isOnSurface(world, x, y, z)) {
+                    return new Location(world, x, y, z);
+                }
+            }
+        }
+        
+        // Could not find valid surface
+        return null;
+    }
+    
+    /**
+     * Check if a location is on the surface (not in a cave)
+     * Verifies that there's enough air above (at least 3 blocks) to ensure it's not underground
+     * 
+     * @param world The world
+     * @param x X coordinate
+     * @param y Y coordinate (should be the air block above ground)
+     * @param z Z coordinate
+     * @return true if on surface, false if in a cave
+     */
+    private boolean isOnSurface(World world, double x, int y, double z) {
+        int blockX = (int) Math.floor(x);
+        int blockZ = (int) Math.floor(z);
+        
+        // Ensure chunk is loaded
+        org.bukkit.Chunk chunk = world.getChunkAt(blockX >> 4, blockZ >> 4);
+        if (!chunk.isLoaded()) {
+            chunk.load();
+        }
+        
+        int maxY = world.getMaxHeight();
+        
+        // Check that there's at least 10 blocks of air above (ensures it's on surface, not in cave)
+        int airBlocks = 0;
+        for (int checkY = y; checkY < Math.min(y + 12, maxY); checkY++) {
+            Block checkBlock = world.getBlockAt(blockX, checkY, blockZ);
+            if (checkBlock.getType() == Material.AIR) {
+                airBlocks++;
+            } else {
+                break; // Hit a solid block, stop counting
+            }
+        }
+        
+        // Need at least 10 blocks of air above to be considered "on surface"
+        return airBlocks >= 10;
     }
     
     /**
