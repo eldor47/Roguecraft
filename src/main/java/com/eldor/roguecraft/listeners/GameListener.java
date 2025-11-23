@@ -724,10 +724,10 @@ public class GameListener implements Listener {
             return; // Don't process if not in a run
         }
         
-        // Get pickup range stat
+        // Get pickup range stat (player-specific for team runs)
         double pickupRange = 1.0;
         if (teamRun != null) {
-            pickupRange = teamRun.getStat("pickup_range");
+            pickupRange = teamRun.getStat(player, "pickup_range");
         } else if (run != null) {
             pickupRange = run.getStat("pickup_range");
         }
@@ -771,8 +771,8 @@ public class GameListener implements Listener {
                 double levelScaling = (playerLevel * 2.0) + (playerLevel * playerLevel * 0.1);
                 int xpAmount = (int) (totalBaseXp + (levelScaling * stackSize));
                 
-                // Apply XP multiplier
-                double multiplier = teamRun.getStat("xp_multiplier");
+                // Apply XP multiplier (player-specific - use the player who collected the token's multiplier)
+                double multiplier = teamRun.getStat(player, "xp_multiplier");
                 int finalXp = (int) (xpAmount * multiplier);
                 teamRun.addExperience(finalXp);
                 
@@ -1240,20 +1240,16 @@ public class GameListener implements Listener {
             return;
         }
         
-        // Store original multiplier and double it
+        // Store original multiplier and double it (player-specific for team runs)
         double originalMultiplier;
         if (teamRun != null && teamRun.isActive()) {
-            originalMultiplier = teamRun.getStat("xp_multiplier");
-            teamRun.setStat("xp_multiplier", originalMultiplier * 2.0);
+            originalMultiplier = teamRun.getStat(player, "xp_multiplier");
+            teamRun.setStat(player, "xp_multiplier", originalMultiplier * 2.0);
             
-            // Notify all team members
-            for (Player p : teamRun.getPlayers()) {
-                if (p != null && p.isOnline()) {
-                    p.sendMessage(ChatColor.GREEN + "✨ Double XP activated! 2x XP for 30 seconds!");
-                    p.playSound(p.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
-                    p.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, p.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
-                }
-            }
+            // Notify only the player who activated it
+            player.sendMessage(ChatColor.GREEN + "✨ Double XP activated! 2x XP for 30 seconds!");
+            player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
+            player.getWorld().spawnParticle(org.bukkit.Particle.HAPPY_VILLAGER, player.getLocation().add(0, 1, 0), 30, 0.5, 0.5, 0.5, 0.3);
         } else if (run != null && run.isActive()) {
             originalMultiplier = run.getStat("xp_multiplier");
             run.setStat("xp_multiplier", originalMultiplier * 2.0);
@@ -1269,24 +1265,23 @@ public class GameListener implements Listener {
         final double finalOriginalMultiplier = originalMultiplier;
         final com.eldor.roguecraft.models.TeamRun finalTeamRun = teamRun;
         final Run finalRun = run;
+        final Player finalPlayer = player;
         
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (finalTeamRun != null && finalTeamRun.isActive()) {
-                // Restore original multiplier
-                finalTeamRun.setStat("xp_multiplier", finalOriginalMultiplier);
+                // Restore original multiplier for this specific player
+                finalTeamRun.setStat(finalPlayer, "xp_multiplier", finalOriginalMultiplier);
                 
-                // Notify team members
-                for (Player p : finalTeamRun.getPlayers()) {
-                    if (p != null && p.isOnline()) {
-                        p.sendMessage(ChatColor.GRAY + "Double XP effect expired.");
-                    }
+                // Notify only the player
+                if (finalPlayer != null && finalPlayer.isOnline()) {
+                    finalPlayer.sendMessage(ChatColor.GRAY + "Double XP effect expired.");
                 }
             } else if (finalRun != null && finalRun.isActive()) {
                 // Restore original multiplier
                 finalRun.setStat("xp_multiplier", finalOriginalMultiplier);
                 
-                Player finalPlayer = finalRun.getPlayer();
-                if (finalPlayer != null && finalPlayer.isOnline()) {
+                Player runPlayer = finalRun.getPlayer();
+                if (runPlayer != null && runPlayer.isOnline()) {
                     finalPlayer.sendMessage(ChatColor.GRAY + "Double XP effect expired.");
                 }
             }

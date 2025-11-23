@@ -634,6 +634,20 @@ public class PlayerListener implements Listener {
                 // Apply all multipliers
                 double originalDamage = event.getDamage();
                 double scaledDamage = originalDamage * mobDamageMultiplier * waveDamageMultiplier * eliteDamageMultiplier * levelDamageMultiplier;
+                
+                // Cap skeleton damage to 50% of player's max HP to prevent one-shots
+                if (attacker instanceof org.bukkit.entity.Skeleton || attacker instanceof org.bukkit.entity.WitherSkeleton || 
+                    attacker instanceof org.bukkit.entity.Stray) {
+                    // Get player's max HP
+                    double playerMaxHP = player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue();
+                    double maxAllowedDamage = playerMaxHP * 0.5; // 50% of max HP
+                    
+                    // Cap the damage
+                    if (scaledDamage > maxAllowedDamage) {
+                        scaledDamage = maxAllowedDamage;
+                    }
+                }
+                
                 event.setDamage(scaledDamage);
             }
         }

@@ -51,7 +51,8 @@ public class Shrine {
     }
     
     public boolean isActive() {
-        return isActive && !hasBeenUsed; // Inactive if disabled OR already used
+        // All shrines are one-time use - once activated, they turn off
+        return isActive && !hasBeenUsed;
     }
     
     public void setActive(boolean active) {

@@ -28,7 +28,9 @@ public class ChestListener implements Listener {
     
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerInteract(PlayerInteractEvent event) {
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) {
+        // Handle both left and right clicks on blocks
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && 
+            event.getAction() != Action.LEFT_CLICK_BLOCK) {
             return;
         }
         
@@ -60,22 +62,12 @@ public class ChestListener implements Listener {
             return;
         }
         
-        // Check if player clicked on a gacha chest
-        GachaChest chest = plugin.getChestManager().getChestNearPlayer(teamId, player);
-        if (chest == null) {
-            // Debug: log if chest not found
-            plugin.getLogger().fine("[Chest] No gacha chest found near player " + player.getName() + " at " + event.getClickedBlock().getLocation());
-            return;
-        }
-        
-        // Check if chest is at the clicked location (use block coordinates for comparison)
+        // Check if the clicked block is a gacha chest by comparing block coordinates directly
+        // This works even when player is jumping or not on the same block
         org.bukkit.Location clickedLoc = event.getClickedBlock().getLocation();
-        org.bukkit.Location chestLoc = chest.getLocation();
-        
-        // Compare block coordinates (ignore Y precision issues)
-        if (clickedLoc.getBlockX() != chestLoc.getBlockX() ||
-            clickedLoc.getBlockY() != chestLoc.getBlockY() ||
-            clickedLoc.getBlockZ() != chestLoc.getBlockZ()) {
+        GachaChest chest = plugin.getChestManager().getChestAtLocation(teamId, clickedLoc);
+        if (chest == null) {
+            // Not a gacha chest, allow normal chest opening
             return;
         }
         
@@ -150,59 +142,38 @@ public class ChestListener implements Listener {
             // But keep this for backwards compatibility
         }
         
-        // For team runs, use average luck of all players (or first player's luck for consistency)
-        // For solo runs, use player's luck
-        double luck = 1.0;
-        if (teamRun != null) {
-            // Use first player's luck for consistency (all players get same roll)
-            // Could also use average, but using first player's is simpler
-            luck = teamRun.getStat(player, "luck");
-        } else if (run != null) {
-            luck = run.getStat("luck");
-        }
-        
-        // Perform gacha roll with luck stat (same roll for all team members)
-        GachaItem item = plugin.getGachaManager().roll(luck);
-        
         // Mark chest as opened
         chest.setOpened(true);
         
         // Remove chest immediately (before opening GUI)
         chest.remove();
         
-        // Open gacha roll GUI for all team members (same roll for everyone)
+        // Roll independently for each player (each player gets their own roll based on their own luck)
+        // Gold cost is shared, but rolls are independent
         if (teamRun != null) {
-            // Open GUI for all team members with the same item
+            // Roll for each team member independently using their own luck
             for (Player teamPlayer : teamRun.getPlayers()) {
                 if (teamPlayer != null && teamPlayer.isOnline()) {
-                    plugin.getGuiManager().openGachaRollGUI(teamPlayer, item, luck, teamRun);
+                    // Get each player's individual luck stat
+                    double playerLuck = teamRun.getStat(teamPlayer, "luck");
+                    // Perform independent gacha roll for this player
+                    GachaItem playerItem = plugin.getGachaManager().roll(playerLuck);
+                    // Open GUI for this player with their own item
+                    plugin.getGuiManager().openGachaRollGUI(teamPlayer, playerItem, playerLuck, teamRun);
                 }
             }
         } else if (run != null) {
+            // Solo run - roll once for the player
+            double luck = run.getStat("luck");
+            GachaItem item = plugin.getGachaManager().roll(luck);
             plugin.getGuiManager().openGachaRollGUI(player, item, luck, run);
         }
-        
-        // Apply item effect to all team members after a short delay
-        final GachaItem finalItem = item;
-        org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (teamRun != null) {
-                // Apply item effect to all team members
-                for (Player teamPlayer : teamRun.getPlayers()) {
-                    if (teamPlayer != null && teamPlayer.isOnline()) {
-                        applyItemEffect(teamPlayer, finalItem, teamRun, null);
-                    }
-                }
-            } else if (run != null) {
-                // Solo run - apply to single player
-                applyItemEffect(player, finalItem, null, run);
-            }
-        }, 5L); // Small delay to ensure GUI is open
     }
     
     /**
      * Apply the effect of a gacha item to the player
      */
-    private void applyItemEffect(Player player, GachaItem item, TeamRun teamRun, Run run) {
+    public void applyItemEffect(Player player, GachaItem item, TeamRun teamRun, Run run) {
         Object runObj = teamRun != null ? teamRun : run;
         if (runObj == null) {
             return;
@@ -234,22 +205,17 @@ public class ChestListener implements Listener {
     }
     
     /**
-     * Apply stat boost from item (shared for team runs - all players get the boost)
+     * Apply stat boost from item (independent per player - each player gets their own item effects)
      */
     private void applyStatBoost(Player player, GachaItem item, Object run) {
         String itemId = item.getId();
         double value = item.getValue();
         
-        // For team runs, apply stat boost to all players
-        // For solo runs, apply to single player
+        // Apply stat boost only to the player who got the item (independent items)
         if (run instanceof TeamRun) {
             TeamRun tr = (TeamRun) run;
-            // Apply to all team members
-            for (Player teamPlayer : tr.getPlayers()) {
-                if (teamPlayer != null && teamPlayer.isOnline()) {
-                    applyStatBoostToPlayer(teamPlayer, item, tr, itemId, value);
-                }
-            }
+            // Apply only to this specific player
+            applyStatBoostToPlayer(player, item, tr, itemId, value);
         } else if (run instanceof Run) {
             applyStatBoostToPlayer(player, item, run, itemId, value);
         }

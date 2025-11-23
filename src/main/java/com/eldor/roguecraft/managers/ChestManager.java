@@ -281,6 +281,43 @@ public class ChestManager {
     }
     
     /**
+     * Get chest at a specific block location
+     * Checks if the clicked block location matches any gacha chest
+     * This is more reliable than distance checking, especially when player is jumping
+     */
+    public GachaChest getChestAtLocation(UUID teamId, Location blockLocation) {
+        List<GachaChest> chests = arenaChests.get(teamId);
+        if (chests == null || blockLocation == null) {
+            return null;
+        }
+        
+        // Compare block coordinates (ignore Y precision issues)
+        int blockX = blockLocation.getBlockX();
+        int blockY = blockLocation.getBlockY();
+        int blockZ = blockLocation.getBlockZ();
+        
+        for (GachaChest chest : chests) {
+            if (!chest.isActive() || chest.isOpened()) {
+                continue;
+            }
+            
+            Location chestLoc = chest.getLocation();
+            if (chestLoc == null) {
+                continue;
+            }
+            
+            // Compare block coordinates
+            if (chestLoc.getBlockX() == blockX &&
+                chestLoc.getBlockY() == blockY &&
+                chestLoc.getBlockZ() == blockZ) {
+                return chest;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
      * Get all chests for a team
      */
     public List<GachaChest> getChestsForRun(UUID teamId) {

@@ -728,7 +728,8 @@ public class PowerUpGUI implements Listener {
                 break;
             case WEAPON_UPGRADE:
                 // Upgrade weapon and show stat changes (per-player weapon)
-                Weapon playerWeapon = teamRun.getWeapon(player);
+                // Ensure we're getting THIS player's weapon, not another player's
+                Weapon playerWeapon = teamRun.getWeapon(player.getUniqueId());
                 if (playerWeapon != null) {
                     int levels = (int) powerUp.getValue();
                     
@@ -841,6 +842,9 @@ public class PowerUpGUI implements Listener {
         } else if (id.contains("drop_rate") || id.contains("droprate") || id.contains("drop")) {
             run.addStat("drop_rate", powerUp.getValue());
             player.sendMessage(ChatColor.AQUA + "+" + String.format("%.1f%%", powerUp.getValue() * 100) + " Drop Rate!");
+        } else if (id.contains("pickup_range") || id.contains("pickuprange") || id.contains("pickup")) {
+            run.addStat("pickup_range", powerUp.getValue());
+            player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Pickup Range!");
         } else if (id.contains("difficulty")) {
             run.addStat("difficulty", powerUp.getValue());
             player.sendMessage(ChatColor.DARK_RED + "+" + String.format("%.2fx", powerUp.getValue()) + " Difficulty!");
@@ -887,6 +891,9 @@ public class PowerUpGUI implements Listener {
         } else if (id.contains("drop_rate") || id.contains("droprate") || id.contains("drop")) {
             teamRun.addStat(player, "drop_rate", powerUp.getValue());
             player.sendMessage(ChatColor.AQUA + "+" + String.format("%.1f%%", powerUp.getValue() * 100) + " Drop Rate!");
+        } else if (id.contains("pickup_range") || id.contains("pickuprange") || id.contains("pickup")) {
+            teamRun.addStat(player, "pickup_range", powerUp.getValue());
+            player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Pickup Range!");
         } else if (id.contains("difficulty")) {
             teamRun.addStat(player, "difficulty", powerUp.getValue());
             // Notify all team members

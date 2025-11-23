@@ -50,23 +50,23 @@ public class DynamicPowerUp {
             } else if (roll < 0.85) {
                 // 7% chance for speed
                 stat = "speed";
+            } else if (roll < 0.90) {
+                // 5% chance for pickup_range (increased from 0.2% to make it more prevalent)
+                stat = "pickup_range";
             } else if (roll < regenStart) {
-                // 7% chance for luck (or more if regen excluded)
+                // 2-7% chance for luck (or more if regen excluded)
                 stat = "luck";
             } else if (roll < regenEnd) {
-                // 5% chance for regeneration (only if not excluded)
+                // 2-5% chance for regeneration (only if not excluded)
                 stat = "regeneration";
-            } else if (roll < 0.992) {
-                // 2.5% chance for drop_rate
+            } else if (regenEnd < 0.98 && roll < 0.98) {
+                // drop_rate: 0.97 to 0.98 (1% chance when regen not excluded)
                 stat = "drop_rate";
-            } else if (roll < 0.994) {
-                // 0.5% chance for pickup_range
-                stat = "pickup_range";
             } else if (roll < 0.997) {
-                // 0.3% chance for jump_height
+                // jump_height: 0.98-0.997 or 0.995-0.997
                 stat = "jump_height";
             } else {
-                // 0.3% chance for xp_multiplier
+                // xp_multiplier: 0.997-1.0
                 stat = "xp_multiplier";
             }
         } while (excludeRegeneration && stat.equals("regeneration") && attempts < maxAttempts);
@@ -436,8 +436,8 @@ public class DynamicPowerUp {
             return 0.02 + (playerLevel * 0.005);
         }
         if (stat.equals("pickup_range")) {
-            // Pickup range: base value of 0.5 blocks, scales with level
-            return 0.5 + (playerLevel * 0.1);
+            // Pickup range: base value of 1.0 blocks, scales with level (increased from 0.5)
+            return 1.0 + (playerLevel * 0.15);
         }
         if (stat.equals("jump_height")) {
             // Jump height: base value of 0.3, scales with level

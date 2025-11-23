@@ -242,20 +242,17 @@ public class GachaRollGUI implements Listener {
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
         player.playSound(player.getLocation(), Sound.ENTITY_FIREWORK_ROCKET_LAUNCH, 0.8f, 1.2f);
         
-        // Track collected item (shared for team runs - all players get the same item)
+        // Track collected item - each player gets their own independent roll
         if (teamRun != null) {
-            // Add item to all team members (they all get the same roll)
-            for (Player teamPlayer : teamRun.getPlayers()) {
-                if (teamPlayer != null && teamPlayer.isOnline()) {
-                    teamRun.addGachaItem(teamPlayer, finalItem);
-                }
-            }
+            // Add item only to this specific player (independent rolls)
+            teamRun.addGachaItem(player, finalItem);
+            // Apply item effect to this specific player
+            plugin.getChestListener().applyItemEffect(player, finalItem, teamRun, null);
         } else if (run != null) {
             run.addGachaItem(finalItem);
+            // Apply item effect for solo runs
+            plugin.getChestListener().applyItemEffect(player, finalItem, null, run);
         }
-        
-        // Apply item effect (this would need to be called from ChestListener)
-        // For now, we'll let ChestListener handle it after GUI closes
         
         // Send final message
         String rarityColor = finalItem.getRarity().getColorCode().toString();

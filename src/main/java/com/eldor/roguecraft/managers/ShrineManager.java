@@ -180,8 +180,13 @@ public class ShrineManager {
         
         Location playerLoc = player.getLocation();
         for (Shrine shrine : shrines) {
-            // Only return active shrines that haven't been used
-            if (!shrine.isActive() || shrine.hasBeenUsed()) {
+            // Only return active shrines
+            // POWER shrines can be used by multiple players, so don't check hasBeenUsed for them
+            // DIFFICULTY and BOSS shrines are one-time use, so check hasBeenUsed
+            if (!shrine.isActive()) {
+                continue;
+            }
+            if (shrine.getType() != Shrine.ShrineType.POWER && shrine.hasBeenUsed()) {
                 continue;
             }
             
@@ -422,31 +427,53 @@ public class ShrineManager {
                         
                         plugin.getLogger().info("[Shrine] Channeling complete for " + taskPlayer.getName() + "! Opening GUI.");
                         
-                        // Mark shrine as used so it can't be channeled again
+                        // Mark all shrines as used after activation (POWER shrines open GUI for all players, then are done)
+                        // DIFFICULTY and BOSS shrines are one-time use per shrine
                         taskShrine.markAsUsed();
                         plugin.getLogger().info("[Shrine] Shrine " + taskShrine.getType().getName() + " marked as used at " + taskShrine.getLocation());
                         
-                        // NOW freeze game when GUI opens
+                        // For POWER shrines, open GUI for ALL team members (like level-up powerup selection)
+                        // For other shrine types, only open for the activating player
                         TeamRun teamRun = plugin.getRunManager().getTeamRun(taskPlayerId);
-                        if (teamRun != null) {
-                            teamRun.setPlayerInGUI(taskPlayerId, true);
-                            // Freeze mobs immediately when GUI opens (don't wait for next game loop tick)
+                        if (taskShrine.getType() == Shrine.ShrineType.POWER && teamRun != null) {
+                            // Open shrine GUI for all team members with independent rolls
+                            for (Player teamPlayer : teamRun.getPlayers()) {
+                                if (teamPlayer != null && teamPlayer.isOnline() && !teamPlayer.isDead()) {
+                                    // Mark each player as in GUI
+                                    teamRun.setPlayerInGUI(teamPlayer.getUniqueId(), true);
+                                    playersInShrineGUI.add(teamPlayer.getUniqueId());
+                                    
+                                    // Stop auto-attack for each player
+                                    plugin.getWeaponManager().stopAutoAttack(teamPlayer);
+                                    
+                                    // Open GUI for this player (each gets their own independent roll)
+                                    openShrineGUI(teamPlayer, taskShrine, taskTeamId);
+                                }
+                            }
+                            
+                            // Freeze mobs once for the whole team
                             plugin.getGameManager().updateMobFreeze(teamRun);
+                        } else {
+                            // Solo run or non-POWER shrine - only open for the activating player
+                            if (teamRun != null) {
+                                teamRun.setPlayerInGUI(taskPlayerId, true);
+                                plugin.getGameManager().updateMobFreeze(teamRun);
+                            }
+                            plugin.getWeaponManager().stopAutoAttack(taskPlayer);
+                            
+                            // Check if player is still in a GUI from previous shrine
+                            boolean wasInGUI = playersInShrineGUI.contains(taskPlayerId);
+                            if (wasInGUI) {
+                                plugin.getLogger().warning("[Shrine] Player " + taskPlayer.getName() + " was still in shrine GUI set, removing before opening new GUI.");
+                                playersInShrineGUI.remove(taskPlayerId);
+                            }
+                            
+                            // Mark as in shrine GUI IMMEDIATELY to prevent duplicates
+                            playersInShrineGUI.add(taskPlayerId);
+                            plugin.getLogger().info("[Shrine] Opening GUI for " + taskPlayer.getName() + ". playersInShrineGUI contains: " + playersInShrineGUI.contains(taskPlayerId));
+                            
+                            openShrineGUI(taskPlayer, taskShrine, taskTeamId);
                         }
-                        plugin.getWeaponManager().stopAutoAttack(taskPlayer);
-                        
-                        // Check if player is still in a GUI from previous shrine
-                        boolean wasInGUI = playersInShrineGUI.contains(taskPlayerId);
-                        if (wasInGUI) {
-                            plugin.getLogger().warning("[Shrine] Player " + taskPlayer.getName() + " was still in shrine GUI set, removing before opening new GUI.");
-                            playersInShrineGUI.remove(taskPlayerId);
-                        }
-                        
-                        // Mark as in shrine GUI IMMEDIATELY to prevent duplicates
-                        playersInShrineGUI.add(taskPlayerId);
-                        plugin.getLogger().info("[Shrine] Opening GUI for " + taskPlayer.getName() + ". playersInShrineGUI contains: " + playersInShrineGUI.contains(taskPlayerId));
-                        
-                        openShrineGUI(taskPlayer, taskShrine, taskTeamId);
                         
                         // Cancel this task
                         try {
@@ -1134,9 +1161,9 @@ public class ShrineManager {
         if (powerUp.getId().startsWith("shrine_jump_height_") || 
             powerUp.getName().contains("Jump Height")) {
             double jumpHeightValue = powerUp.getValue();
-            // Add jump height to stat
+            // Add jump height to stat (player-specific for team runs)
             if (teamRun != null) {
-                teamRun.addStat("jump_height", jumpHeightValue);
+                teamRun.addStat(player, "jump_height", jumpHeightValue);
             } else if (run != null) {
                 run.addStat("jump_height", jumpHeightValue);
             }
@@ -1151,6 +1178,7 @@ public class ShrineManager {
             String statName = extractStatName(powerUp.getId());
             double value = powerUp.getValue();
             
+            // Normal stat application
             if (teamRun != null) {
                 teamRun.addStat(player, statName, value);
                 teamRun.addPowerUp(player, powerUp);

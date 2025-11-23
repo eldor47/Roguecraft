@@ -439,32 +439,183 @@ public class WeaponManager {
     private void applyGachaOnHitEffects(Player player, LivingEntity target) {
         java.util.Random random = new java.util.Random();
         
-        // Check all gacha items the player has
+        // Get player's run to check gacha items (supports stacking)
+        com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        com.eldor.roguecraft.models.Run run = null;
+        if (teamRun == null) {
+            run = plugin.getRunManager().getRun(player);
+        }
+        
+        // Check all moldy cheese items the player has (supports stacking - each item has its own proc chance)
+        int moldyCheeseCount = 0;
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("moldy_cheese")) {
+                    moldyCheeseCount++;
+                    if (random.nextDouble() < item.getValue()) {
+                        // Moldy Cheese - poison effect (stacks - each item procs independently)
+                        int poisonDuration = 100; // 5 seconds base
+                        int poisonLevel = Math.min(1, moldyCheeseCount - 1); // Level 0 for 1 item, Level 1 for 2+ items
+                        target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.POISON, poisonDuration, poisonLevel, false, true));
+                        
+                        // Enhanced visual feedback
+                        target.getWorld().spawnParticle(Particle.ITEM_SLIME, target.getLocation().add(0, 1, 0), 15, 0.4, 0.6, 0.4, 0.02);
+                        target.getWorld().spawnParticle(Particle.SMOKE, target.getLocation().add(0, 1, 0), 8, 0.3, 0.5, 0.3, 0.05);
+                        // Play sound effect
+                        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.ENTITY_SLIME_SQUISH, 0.5f, 0.8f);
+                    }
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("moldy_cheese")) {
+                    moldyCheeseCount++;
+                    if (random.nextDouble() < item.getValue()) {
+                        // Moldy Cheese - poison effect (stacks - each item procs independently)
+                        int poisonDuration = 100; // 5 seconds base
+                        int poisonLevel = Math.min(1, moldyCheeseCount - 1); // Level 0 for 1 item, Level 1 for 2+ items
+                        target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.POISON, poisonDuration, poisonLevel, false, true));
+                        
+                        // Enhanced visual feedback
+                        target.getWorld().spawnParticle(Particle.ITEM_SLIME, target.getLocation().add(0, 1, 0), 15, 0.4, 0.6, 0.4, 0.02);
+                        target.getWorld().spawnParticle(Particle.SMOKE, target.getLocation().add(0, 1, 0), 8, 0.3, 0.5, 0.3, 0.05);
+                        // Play sound effect
+                        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.ENTITY_SLIME_SQUISH, 0.5f, 0.8f);
+                    }
+                }
+            }
+        }
+        
+        // Also check metadata for backwards compatibility (legacy system)
         for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_moldy_cheese")) {
             if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
                 com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
                 if (random.nextDouble() < item.getValue()) {
                     // Moldy Cheese - poison effect
                     target.addPotionEffect(new org.bukkit.potion.PotionEffect(
-                        org.bukkit.potion.PotionEffectType.POISON, 100, 0)); // 5 seconds
-                    target.getWorld().spawnParticle(Particle.ITEM_SLIME, target.getLocation(), 10, 0.3, 0.5, 0.3, 0.01);
+                        org.bukkit.potion.PotionEffectType.POISON, 100, 0, false, true)); // 5 seconds
+                    target.getWorld().spawnParticle(Particle.ITEM_SLIME, target.getLocation().add(0, 1, 0), 15, 0.4, 0.6, 0.4, 0.02);
+                    target.getWorld().spawnParticle(Particle.CAMPFIRE_SIGNAL_SMOKE, target.getLocation().add(0, 1, 0), 8, 0.3, 0.5, 0.3, 0.05);
+                    target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.ENTITY_SLIME_SQUISH, 0.5f, 0.8f);
                 }
             }
         }
         
+        // Check all ice crystal items the player has (supports stacking - each item has its own proc chance)
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("ice_crystal")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Ice Crystal - freeze effect (stacks - each item procs independently)
+                        target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
+                        target.setFreezeTicks(100);
+                        // Enhanced visual feedback
+                        target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation().add(0, 1, 0), 20, 0.4, 0.6, 0.4, 0.02);
+                        target.getWorld().spawnParticle(Particle.ITEM_SNOWBALL, target.getLocation().add(0, 1, 0), 10, 0.3, 0.5, 0.3, 0.01);
+                        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.BLOCK_GLASS_BREAK, 0.6f, 1.2f);
+                    }
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("ice_crystal")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Ice Crystal - freeze effect (stacks - each item procs independently)
+                        target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
+                        target.setFreezeTicks(100);
+                        // Enhanced visual feedback
+                        target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation().add(0, 1, 0), 20, 0.4, 0.6, 0.4, 0.02);
+                        target.getWorld().spawnParticle(Particle.ITEM_SNOWBALL, target.getLocation().add(0, 1, 0), 10, 0.3, 0.5, 0.3, 0.01);
+                        target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.BLOCK_GLASS_BREAK, 0.6f, 1.2f);
+                    }
+                }
+            }
+        }
+        
+        // Also check metadata for backwards compatibility (legacy system)
         for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_ice_crystal")) {
             if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
                 com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
                 if (random.nextDouble() < item.getValue()) {
                     // Ice Crystal - freeze effect
                     target.addPotionEffect(new org.bukkit.potion.PotionEffect(
-                        org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1)); // Slow II for 5 seconds
+                        org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
                     target.setFreezeTicks(100);
-                    target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation(), 15, 0.3, 0.5, 0.3, 0.01);
+                    target.getWorld().spawnParticle(Particle.SNOWFLAKE, target.getLocation().add(0, 1, 0), 20, 0.4, 0.6, 0.4, 0.02);
+                    target.getWorld().spawnParticle(Particle.ITEM_SNOWBALL, target.getLocation().add(0, 1, 0), 10, 0.3, 0.5, 0.3, 0.01);
+                    target.getWorld().playSound(target.getLocation(), org.bukkit.Sound.BLOCK_GLASS_BREAK, 0.6f, 1.2f);
                 }
             }
         }
         
+        // Check all cursed doll items the player has (supports stacking)
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("cursed_doll")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Cursed Doll - curse effect (30% max HP per second for 3 seconds)
+                        applyCurseEffect(player, target);
+                    }
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("cursed_doll")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Cursed Doll - curse effect (30% max HP per second for 3 seconds)
+                        applyCurseEffect(player, target);
+                    }
+                }
+            }
+        }
+        
+        // Check all spicy meatball items the player has (supports stacking)
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("spicy_meatball")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Spicy Meatball - explosion effect
+                        createExplosionEffect(player, target, item.getValue());
+                    }
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("spicy_meatball")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Spicy Meatball - explosion effect
+                        createExplosionEffect(player, target, item.getValue());
+                    }
+                }
+            }
+        }
+        
+        // Check all power gloves items the player has (supports stacking)
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("power_gloves")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Power Gloves - giant blast effect
+                        createBlastEffect(player, target);
+                    }
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("power_gloves")) {
+                    if (random.nextDouble() < item.getValue()) {
+                        // Power Gloves - giant blast effect
+                        createBlastEffect(player, target);
+                    }
+                }
+            }
+        }
+        
+        // Also check metadata for backwards compatibility (legacy system)
         for (org.bukkit.metadata.MetadataValue meta : player.getMetadata("gacha_item_cursed_doll")) {
             if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
                 com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();

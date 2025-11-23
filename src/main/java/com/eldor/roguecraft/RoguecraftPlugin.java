@@ -26,6 +26,7 @@ public class RoguecraftPlugin extends JavaPlugin {
     private GachaManager gachaManager;
     private ChestManager chestManager;
     private TeamLobbyManager teamLobbyManager;
+    private com.eldor.roguecraft.listeners.ChestListener chestListener;
 
     @Override
     public void onEnable() {
@@ -65,7 +66,8 @@ public class RoguecraftPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.PlayerListener(this), this);
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.GameListener(this), this);
         getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.ShrineListener(this), this);
-        getServer().getPluginManager().registerEvents(new com.eldor.roguecraft.listeners.ChestListener(this), this);
+        this.chestListener = new com.eldor.roguecraft.listeners.ChestListener(this);
+        getServer().getPluginManager().registerEvents(chestListener, this);
         
         // Register commands
         RoguecraftCommand commandHandler = new RoguecraftCommand(this);
@@ -216,5 +218,9 @@ public class RoguecraftPlugin extends JavaPlugin {
     
     public TeamLobbyManager getTeamLobbyManager() {
         return teamLobbyManager;
+    }
+    
+    public com.eldor.roguecraft.listeners.ChestListener getChestListener() {
+        return chestListener;
     }
 }

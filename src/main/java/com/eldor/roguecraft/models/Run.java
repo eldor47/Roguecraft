@@ -57,7 +57,7 @@ public class Run {
         stats.put("difficulty", 1.0); // Base difficulty multiplier (affects enemy HP/damage/spawns)
         stats.put("regeneration", 0.1); // Health regeneration per second
         stats.put("drop_rate", 1.0); // Drop rate multiplier (1.0 = 100% of base chance)
-        stats.put("pickup_range", 1.0); // Pickup range in blocks (default 1 block)
+        stats.put("pickup_range", 5.0); // Pickup range in blocks (default 5 blocks)
         stats.put("jump_height", 0.0); // Jump height stat (applies slow falling effect)
     }
 

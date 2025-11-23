@@ -26,6 +26,7 @@ public class GameManager {
     private final Map<UUID, BukkitTask> spawnTasks;
     private final Map<UUID, BukkitTask> regenTasks; // Regeneration tasks
     private final Map<UUID, BukkitTask> jumpHeightTasks; // Jump height (slow falling) tasks
+    private final Map<UUID, BukkitTask> pickupRangeTasks; // Pickup range (item pulling) tasks
     private final Map<UUID, BukkitTask> healthDisplayTasks; // Health display for players
     private final Set<UUID> teamsInWeaponSelection; // Track players currently in weapon selection phase
     private final Map<UUID, Set<LivingEntity>> frozenMobs; // Track frozen mobs per team run
@@ -41,6 +42,7 @@ public class GameManager {
         this.spawnTasks = new HashMap<>();
         this.regenTasks = new HashMap<>();
         this.jumpHeightTasks = new HashMap<>();
+        this.pickupRangeTasks = new HashMap<>();
         this.healthDisplayTasks = new HashMap<>();
         this.teamsInWeaponSelection = new HashSet<>();
         this.frozenMobs = new HashMap<>();
@@ -423,7 +425,21 @@ public class GameManager {
                     // Get player-specific jump_height stat
                     double jumpHeight = teamRun.getStat(player, "jump_height");
                     if (jumpHeight > 0) {
-                        // Apply slow falling effect based on jump_height
+                        // Calculate jump boost level based on jump_height
+                        // 0.5 jump_height = Jump Boost I, 1.0 = Jump Boost II, 1.5 = Jump Boost III, 2.0 = Jump Boost IV
+                        int jumpBoostLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
+                        if (jumpBoostLevel > 0) {
+                            // Apply jump boost effect (infinite duration, refreshed every tick)
+                            player.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                                org.bukkit.potion.PotionEffectType.JUMP_BOOST, 
+                                100, // 5 seconds duration (refreshed every tick)
+                                jumpBoostLevel - 1, // Level 0-3 (jump boost levels are 0-indexed)
+                                false, // No ambient particles
+                                false  // No icon
+                            ));
+                        }
+                        
+                        // Also apply slow falling for safety (prevents fall damage from higher jumps)
                         // Higher jump_height = higher slow falling level (capped at level 4)
                         int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
                         if (slowFallingLevel > 0) {
@@ -435,6 +451,46 @@ public class GameManager {
                                 false, // No ambient particles
                                 false  // No icon
                             ));
+                        }
+                    }
+                }
+            }
+        }, 0L, 1L); // Run every tick
+        
+        // Pickup range task - pulls items towards players based on their pickup_range stat
+        BukkitTask pickupRangeTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) {
+                return;
+            }
+            
+            // Apply pickup range effect per player (each player has their own pickup_range stat)
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline() && !player.isDead()) {
+                    // Get player-specific pickup_range stat
+                    double pickupRange = teamRun.getStat(player, "pickup_range");
+                    if (pickupRange > 1.0) { // Only pull if pickup range is greater than default 1 block
+                        org.bukkit.Location playerLoc = player.getLocation();
+                        
+                        // Find nearby items within pickup range
+                        for (org.bukkit.entity.Entity entity : player.getWorld().getNearbyEntities(
+                                playerLoc, pickupRange, pickupRange, pickupRange)) {
+                            if (entity instanceof org.bukkit.entity.Item) {
+                                org.bukkit.entity.Item item = (org.bukkit.entity.Item) entity;
+                                double distance = item.getLocation().distance(playerLoc);
+                                
+                                // Only pull items within pickup range
+                                if (distance <= pickupRange && distance > 0.5) { // Don't pull if already very close
+                                    // Calculate direction towards player
+                                    org.bukkit.util.Vector direction = playerLoc.toVector()
+                                            .subtract(item.getLocation().toVector()).normalize();
+                                    
+                                    // Pull speed based on distance (faster when closer)
+                                    double pullSpeed = distance > pickupRange * 0.5 ? 0.8 : 1.5;
+                                    
+                                    // Apply velocity to pull item towards player
+                                    item.setVelocity(direction.multiply(pullSpeed));
+                                }
+                            }
                         }
                     }
                 }
@@ -637,7 +693,7 @@ public class GameManager {
             
             // Scale difficulty based on player count
             int playerCount = teamRun.getPlayerCount();
-            double multiplayerMultiplier = 1.0 + (playerCount - 1) * 0.2; // 20% per additional player
+            double multiplayerMultiplier = 1.0 + (playerCount - 1) * 0.05; // 5% per additional player (reduced from 20%)
             
             // Apply difficulty stat (from power-ups) - use maximum difficulty from all players for team-wide mob scaling
             // Since difficulty affects shared mob scaling, we use the maximum so any player's difficulty increase affects the team
@@ -666,6 +722,7 @@ public class GameManager {
         runTasks.put(teamId, gameTask);
         regenTasks.put(teamId, regenTask);
         jumpHeightTasks.put(teamId, jumpHeightTask);
+        pickupRangeTasks.put(teamId, pickupRangeTask);
 
         // Spawn task
         startSpawnTask(teamRun, arena);
@@ -946,12 +1003,11 @@ public class GameManager {
                             mob.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
                         }
                         
-                        // Make creepers explode faster (reduced fuse time)
+                        // Creeper fuse time set to normal (default 30 ticks = 1.5 seconds)
                         if (mob instanceof org.bukkit.entity.Creeper) {
                             org.bukkit.entity.Creeper creeper = (org.bukkit.entity.Creeper) mob;
-                            // Set max fuse ticks to 20 (1 second) instead of default 30 (1.5 seconds)
-                            // This makes creepers explode faster and more dangerous
-                            creeper.setMaxFuseTicks(10);
+                            // Set max fuse ticks to default 30 (1.5 seconds)
+                            creeper.setMaxFuseTicks(30);
                             // Tag as roguecraft mob for tracking
                             mob.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
                         }
@@ -2321,6 +2377,11 @@ public class GameManager {
             jumpHeightTask.cancel();
         }
         
+        BukkitTask pickupRangeTask = pickupRangeTasks.remove(teamId);
+        if (pickupRangeTask != null) {
+            pickupRangeTask.cancel();
+        }
+        
         // Clean up weapon selection tracking (remove all players from this team)
         if (teamRun != null) {
             for (UUID playerId : teamRun.getPlayerIds()) {
@@ -2609,8 +2670,23 @@ public class GameManager {
                 }
             }
             
-            if (removedEntities > 0) {
-                plugin.getLogger().info("[GameManager] Removed " + removedEntities + " plugin entities (items, ArmorStands, ItemFrames) from arena during cleanup");
+            // Remove ALL remaining entities in the arena (except players)
+            int removedAllEntities = 0;
+            for (org.bukkit.entity.Entity entity : world.getNearbyEntities(arena.getCenter(), radius, radius, radius)) {
+                if (entity == null || entity.isDead()) continue;
+                
+                // Skip players - don't remove them!
+                if (entity instanceof Player) {
+                    continue;
+                }
+                
+                // Remove all other entities (items, ArmorStands, ItemFrames, dropped blocks, etc.)
+                entity.remove();
+                removedAllEntities++;
+            }
+            
+            if (removedEntities > 0 || removedAllEntities > 0) {
+                plugin.getLogger().info("[GameManager] Removed " + (removedEntities + removedAllEntities) + " entities from arena during cleanup");
             }
             
             // Double-check shrines are removed by scanning for shrine blocks
@@ -2655,15 +2731,20 @@ public class GameManager {
                         
                         org.bukkit.Material mat = block.getType();
                         
-                        // Remove shrine-related blocks
+                        // Remove shrine-related blocks (including all torch types)
                         if (mat == org.bukkit.Material.SKELETON_SKULL ||
                             mat == org.bukkit.Material.BLACK_CONCRETE ||
                             mat == org.bukkit.Material.BLACK_TERRACOTTA ||
                             mat == org.bukkit.Material.OBSIDIAN ||
                             mat == org.bukkit.Material.BLACKSTONE ||
                             mat == org.bukkit.Material.SOUL_TORCH ||
+                            mat == org.bukkit.Material.TORCH ||
+                            mat == org.bukkit.Material.REDSTONE_TORCH ||
                             mat == org.bukkit.Material.END_ROD ||
                             mat == org.bukkit.Material.DARK_OAK_FENCE ||
+                            mat == org.bukkit.Material.WALL_TORCH ||
+                            mat == org.bukkit.Material.SOUL_WALL_TORCH ||
+                            mat == org.bukkit.Material.REDSTONE_WALL_TORCH ||
                             (mat.name().contains("CONCRETE") && (mat.name().contains("BLACK") || mat.name().contains("GRAY"))) ||
                             (mat.name().contains("TERRACOTTA") && (mat.name().contains("BLACK") || mat.name().contains("GRAY")))) {
                             // Ensure chunk is loaded
