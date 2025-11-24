@@ -2,6 +2,8 @@ package com.eldor.roguecraft;
 
 import com.eldor.roguecraft.commands.RoguecraftCommand;
 import com.eldor.roguecraft.integrations.PlaceholderAPIExpansion;
+import com.eldor.roguecraft.integrations.VaultIntegration;
+import com.eldor.roguecraft.integrations.ProtocolLibIntegration;
 import com.eldor.roguecraft.managers.*;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -26,7 +28,10 @@ public class RoguecraftPlugin extends JavaPlugin {
     private GachaManager gachaManager;
     private ChestManager chestManager;
     private TeamLobbyManager teamLobbyManager;
+    private DatabaseManager databaseManager;
     private com.eldor.roguecraft.listeners.ChestListener chestListener;
+    private VaultIntegration vaultIntegration;
+    private ProtocolLibIntegration protocolLibIntegration;
 
     @Override
     public void onEnable() {
@@ -55,6 +60,7 @@ public class RoguecraftPlugin extends JavaPlugin {
             this.gachaManager = new GachaManager(this);
             this.chestManager = new ChestManager(this);
             this.teamLobbyManager = new TeamLobbyManager(this);
+            this.databaseManager = new DatabaseManager(this);
             this.gameManager = new GameManager(this);
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Failed to initialize managers", e);
@@ -113,6 +119,11 @@ public class RoguecraftPlugin extends JavaPlugin {
             // Chest cleanup handled per-run in GameManager
         }
         
+        // Close database connection
+        if (databaseManager != null) {
+            databaseManager.close();
+        }
+        
         getLogger().info("Roguecraft has been disabled!");
     }
 
@@ -125,8 +136,10 @@ public class RoguecraftPlugin extends JavaPlugin {
         
         // ProtocolLib
         if (com.eldor.roguecraft.util.DepCheck.has("ProtocolLib")) {
-            getLogger().info("ProtocolLib detected - enabling packet-based telegraphs.");
-            // ProtocolLib integration can be added here
+            this.protocolLibIntegration = new ProtocolLibIntegration(this);
+            if (protocolLibIntegration.isEnabled()) {
+                getLogger().info("ProtocolLib integration enabled - advanced visual effects available.");
+            }
         }
         
         // WorldGuard
@@ -139,8 +152,10 @@ public class RoguecraftPlugin extends JavaPlugin {
         
         // Vault
         if (com.eldor.roguecraft.util.DepCheck.has("Vault")) {
-            getLogger().info("Vault detected - enabling economy integration.");
-            // Vault integration can be added here
+            this.vaultIntegration = new VaultIntegration(this);
+            if (vaultIntegration.isEnabled()) {
+                getLogger().info("Vault economy integration enabled - economy: " + vaultIntegration.getEconomyName());
+            }
         }
     }
 
@@ -222,5 +237,17 @@ public class RoguecraftPlugin extends JavaPlugin {
     
     public com.eldor.roguecraft.listeners.ChestListener getChestListener() {
         return chestListener;
+    }
+    
+    public VaultIntegration getVaultIntegration() {
+        return vaultIntegration;
+    }
+    
+    public ProtocolLibIntegration getProtocolLibIntegration() {
+        return protocolLibIntegration;
+    }
+    
+    public DatabaseManager getDatabaseManager() {
+        return databaseManager;
     }
 }

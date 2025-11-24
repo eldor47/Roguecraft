@@ -23,6 +23,7 @@ import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PotionSplashEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
+import org.bukkit.entity.Arrow;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.entity.Snowball;
 import org.bukkit.inventory.ItemStack;
@@ -79,10 +80,57 @@ public class GameListener implements Listener {
         }, 20L, 20L); // Every 1 second
     }
     
-    @EventHandler(priority = EventPriority.LOWEST)
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityDeath(EntityDeathEvent event) {
         LivingEntity entity = event.getEntity();
         EntityType type = entity.getType();
+        
+        // Remove boss bar if this was a boss
+        if (entity.hasMetadata("roguecraft_elite_boss")) {
+            int barId = entity.getEntityId();
+            // Remove boss bar for all players
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                plugin.getProtocolLibIntegration().removeBossBarForAll(barId);
+            }
+        }
+        
+        // Handle summon deaths
+        if (entity.hasMetadata("roguecraft_summon")) {
+            String summonType = null;
+            if (entity.hasMetadata("roguecraft_summon_type")) {
+                summonType = entity.getMetadata("roguecraft_summon_type").get(0).asString();
+            }
+            
+            // Handle explosive chicken death
+            if ("explosive_chicken".equals(summonType) && entity instanceof org.bukkit.entity.Chicken) {
+                Location loc = entity.getLocation();
+                // Create explosion (no block damage, but damages entities)
+                loc.getWorld().createExplosion(loc, 3.0f, false, false);
+                loc.getWorld().spawnParticle(org.bukkit.Particle.EXPLOSION, loc, 1, 0.5, 0.5, 0.5, 0.1);
+                loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.0f);
+            }
+            
+            // Remove from active summons
+            plugin.getGameManager().removeSummon(entity);
+            
+            // Cancel combat task if exists
+            if (entity.hasMetadata("summon_combat_task")) {
+                try {
+                    int taskId = entity.getMetadata("summon_combat_task").get(0).asInt();
+                    Bukkit.getScheduler().cancelTask(taskId);
+                } catch (Exception e) {
+                    // Ignore
+                }
+            }
+            
+            return; // Don't process as a regular mob death
+        }
+        
+        // Handle decoy villager death
+        if (entity instanceof org.bukkit.entity.Villager && entity.hasMetadata("roguecraft_decoy")) {
+            plugin.getGameManager().removeDecoy((org.bukkit.entity.Villager) entity);
+            return;
+        }
         
         // Only handle mobs in arenas (not players)
         if (entity instanceof Player) {
@@ -100,6 +148,22 @@ public class GameListener implements Listener {
             isLegendary = entity.hasMetadata("is_legendary");
             
             // Clear custom name and glowing for all mobs IMMEDIATELY
+            // Use a scheduled task to ensure it happens before death message is logged
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    if (entity.isValid() && entity.getCustomName() != null) {
+                        entity.setCustomName(null);
+                        entity.setCustomNameVisible(false);
+                    }
+                    if (entity.isValid() && entity.isGlowing()) {
+                        entity.setGlowing(false);
+                    }
+                } catch (Exception e) {
+                    // Ignore - entity might be invalid
+                }
+            });
+            
+            // Also clear immediately (synchronous) as backup
             if (entity.getCustomName() != null) {
                 entity.setCustomName(null);
                 entity.setCustomNameVisible(false);
@@ -114,6 +178,24 @@ public class GameListener implements Listener {
                     org.bukkit.scoreboard.Team team = scoreboard.getTeam("roguecraft_legendary_gold");
                     if (team != null && team.hasEntry(entity.getUniqueId().toString())) {
                         team.removeEntry(entity.getUniqueId().toString());
+                    }
+                } catch (Exception e) {
+                    // Silently ignore - entity might already be removed
+                }
+            }
+            
+            // Remove from decoy team if applicable
+            if (entity.hasMetadata("roguecraft_decoy")) {
+                try {
+                    org.bukkit.scoreboard.Scoreboard scoreboard = org.bukkit.Bukkit.getScoreboardManager().getMainScoreboard();
+                    org.bukkit.scoreboard.Team team = scoreboard.getTeam("roguecraft_decoy_purple");
+                    if (team != null && team.hasEntry(entity.getUniqueId().toString())) {
+                        team.removeEntry(entity.getUniqueId().toString());
+                    }
+                    // Cancel particle task
+                    if (entity.hasMetadata("decoy_particle_task")) {
+                        int taskId = entity.getMetadata("decoy_particle_task").get(0).asInt();
+                        org.bukkit.Bukkit.getScheduler().cancelTask(taskId);
                     }
                 } catch (Exception e) {
                     // Silently ignore - entity might already be removed
@@ -973,17 +1055,16 @@ public class GameListener implements Listener {
     }
     
     private void applySpeedBoost(Player player, com.eldor.roguecraft.models.TeamRun teamRun, Run run) {
-        // Get current speed multiplier from run stats
+        // Get current speed multiplier from run stats (player-specific for team runs)
         double speedMultiplier = 1.0;
         if (teamRun != null && teamRun.isActive()) {
-            speedMultiplier = teamRun.getStat("speed");
+            speedMultiplier = teamRun.getStat(player, "speed"); // Use player-specific stat
         } else if (run != null && run.isActive()) {
             speedMultiplier = run.getStat("speed");
         }
         
         // Apply temporary speed boost (100% increase for 15 seconds)
         final double baseSpeed = 0.1;
-        final double finalSpeedMultiplier = speedMultiplier; // Make final for lambda
         double boostedSpeed = baseSpeed * speedMultiplier * 2.0; // Double the current speed
         
         org.bukkit.attribute.Attribute speedAttr = org.bukkit.attribute.Attribute.GENERIC_MOVEMENT_SPEED;
@@ -992,13 +1073,23 @@ public class GameListener implements Listener {
             double currentSpeed = speedInstance.getBaseValue();
             speedInstance.setBaseValue(boostedSpeed);
             
-            // Restore after 15 seconds
+            // Restore after 15 seconds - recalculate from current stat (not captured value)
             final Player finalPlayer = player; // Make final for lambda
             final org.bukkit.attribute.AttributeInstance finalSpeedInstance = speedInstance; // Make final for lambda
+            final com.eldor.roguecraft.models.TeamRun finalTeamRun = teamRun; // Make final for lambda
+            final Run finalRun = run; // Make final for lambda
             Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 if (finalPlayer.isOnline() && !finalPlayer.isDead()) {
-                    // Restore to original speed (with stat multiplier)
-                    double restoredSpeed = baseSpeed * finalSpeedMultiplier;
+                    // Recalculate speed from current stat value (may have changed during boost duration)
+                    double currentSpeedMultiplier = 1.0;
+                    if (finalTeamRun != null && finalTeamRun.isActive()) {
+                        currentSpeedMultiplier = finalTeamRun.getStat(finalPlayer, "speed"); // Use current player-specific stat
+                    } else if (finalRun != null && finalRun.isActive()) {
+                        currentSpeedMultiplier = finalRun.getStat("speed");
+                    }
+                    // Restore to current speed (with current stat multiplier)
+                    double restoredSpeed = baseSpeed * currentSpeedMultiplier;
+                    restoredSpeed = Math.max(0.0, Math.min(1.0, restoredSpeed)); // Clamp between 0 and 1
                     finalSpeedInstance.setBaseValue(restoredSpeed);
                     finalPlayer.sendMessage(ChatColor.GRAY + "Speed boost expired.");
                 }
@@ -1621,6 +1712,11 @@ public class GameListener implements Listener {
             // Location where potion splashed
             Location splashLoc = potion.getLocation();
             
+            // ProtocolLib: Show AOE damage indicator
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                plugin.getProtocolLibIntegration().showAOEDamageIndicator(splashLoc, weaponAoe, com.eldor.roguecraft.models.Weapon.WeaponType.POTION_THROWER);
+            }
+            
             // Spawn particles once (not continuously)
             splashLoc.getWorld().spawnParticle(Particle.WITCH, splashLoc, 30, 1.5, 1, 1.5, 0);
             splashLoc.getWorld().playSound(splashLoc, Sound.ENTITY_SPLASH_POTION_BREAK, 1.0f, 1.0f);
@@ -1645,6 +1741,12 @@ public class GameListener implements Listener {
                     living.addPotionEffect(new PotionEffect(PotionEffectType.POISON, 60, 0));
                     living.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, 100, 0));
                     
+                    // ProtocolLib: Show status effect visuals
+                    if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                        plugin.getProtocolLibIntegration().showStatusEffectVisual(player, living, PotionEffectType.POISON, 0);
+                        plugin.getProtocolLibIntegration().showStatusEffectVisual(player, living, PotionEffectType.WEAKNESS, 0);
+                    }
+                    
                     // Apply weapon mod effects
                     plugin.getWeaponManager().applyWeaponModEffects(player, living);
                     
@@ -1661,6 +1763,51 @@ public class GameListener implements Listener {
     
     @EventHandler(priority = EventPriority.HIGH)
     public void onProjectileHit(ProjectileHitEvent event) {
+        // ProtocolLib: Stop projectile trail when it hits
+        if (event.getEntity() instanceof org.bukkit.entity.Projectile) {
+            org.bukkit.entity.Projectile projectile = (org.bukkit.entity.Projectile) event.getEntity();
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                plugin.getProtocolLibIntegration().stopProjectileTrail(projectile);
+            }
+        }
+        
+        // Handle arrow hits - apply weapon mod effects (like Burn Effect)
+        if (event.getEntity() instanceof Arrow) {
+            Arrow arrow = (Arrow) event.getEntity();
+            
+            // Check if arrow was shot by a player in a run
+            if (arrow.getShooter() instanceof Player) {
+                Player player = (Player) arrow.getShooter();
+                
+                // Check if player has an active run
+                com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+                com.eldor.roguecraft.models.Run run = null;
+                boolean inRun = false;
+                
+                if (teamRun != null && teamRun.isActive()) {
+                    inRun = true;
+                } else {
+                    run = plugin.getRunManager().getRun(player);
+                    if (run != null && run.isActive()) {
+                        inRun = true;
+                    }
+                }
+                
+                if (inRun) {
+                    // Check if arrow hit an entity
+                    if (event.getHitEntity() != null && event.getHitEntity() instanceof LivingEntity) {
+                        LivingEntity target = (LivingEntity) event.getHitEntity();
+                        
+                        // Only apply to enemies (not players)
+                        if (!(target instanceof Player)) {
+                            // Apply weapon mod effects (Burn Effect, Frost Nova, etc.)
+                            plugin.getWeaponManager().applyWeaponModEffects(player, target);
+                        }
+                    }
+                }
+            }
+        }
+        
         // Handle ice shard weapon hits
         if (event.getEntity() instanceof Snowball) {
             Snowball snowball = (Snowball) event.getEntity();
@@ -1681,6 +1828,11 @@ public class GameListener implements Listener {
                 // Location where snowball hit
                 Location hitLoc = snowball.getLocation();
                 
+                // ProtocolLib: Show AOE damage indicator
+                if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                    plugin.getProtocolLibIntegration().showAOEDamageIndicator(hitLoc, weaponAoe, com.eldor.roguecraft.models.Weapon.WeaponType.ICE_SHARD);
+                }
+                
                 // Spawn particles
                 hitLoc.getWorld().spawnParticle(Particle.SNOWFLAKE, hitLoc, 30, 1, 1, 1, 0);
                 hitLoc.getWorld().playSound(hitLoc, Sound.BLOCK_GLASS_BREAK, 1.0f, 1.5f);
@@ -1692,9 +1844,10 @@ public class GameListener implements Listener {
                     if (entity instanceof LivingEntity && !(entity instanceof Player) && entity != player) {
                         LivingEntity living = (LivingEntity) entity;
                         
-                        // Calculate damage with distance falloff
+                        // Calculate damage with distance falloff (reduced falloff for better damage)
                         double distance = entity.getLocation().distance(hitLoc);
-                        double distanceMultiplier = Math.max(0.1, 1.0 - (distance / weaponAoe));
+                        // Minimum 50% damage at max range (increased from 10%)
+                        double distanceMultiplier = Math.max(0.5, 1.0 - (distance / (weaponAoe * 2.0)));
                         double baseDamage = weaponDamage * distanceMultiplier;
                         
                         // Apply damage
@@ -1707,6 +1860,11 @@ public class GameListener implements Listener {
                         // Apply ice effects
                         living.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, 60, 1)); // Slow II for 3 seconds
                         living.setFreezeTicks(100); // Freeze effect
+                        
+                        // ProtocolLib: Show status effect visual
+                        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                            plugin.getProtocolLibIntegration().showStatusEffectVisual(player, living, PotionEffectType.SLOWNESS, 1);
+                        }
                         
                         totalDamageDealt += finalDamage;
                     }

@@ -111,28 +111,109 @@ public class PowerUpManager {
      * Generate dynamic power-ups based on player stats
      * Ensures no duplicate power-ups in selection
      * Excludes capped stats (regeneration >= 4.0, lifesteal >= 4.0 HP/second)
+     * Excludes weapon mods that the player already has (weapon mods can only be picked once)
      */
-    public List<PowerUp> generateDynamicPowerUps(int playerLevel, double luck, Object run) {
+    public List<PowerUp> generateDynamicPowerUps(int playerLevel, double luck, Object run, org.bukkit.entity.Player player) {
         // Check if regeneration is capped
         double currentRegen = 0.0;
         double currentLifesteal = 0.0;
         if (run != null) {
             if (run instanceof com.eldor.roguecraft.models.TeamRun) {
-                currentRegen = ((com.eldor.roguecraft.models.TeamRun) run).getStat("regeneration");
-                currentLifesteal = calculateLifesteal(run);
+                if (player != null) {
+                    currentRegen = ((com.eldor.roguecraft.models.TeamRun) run).getStat(player, "regeneration");
+                }
+                currentLifesteal = calculateLifesteal(run, player);
             } else if (run instanceof com.eldor.roguecraft.models.Run) {
                 currentRegen = ((com.eldor.roguecraft.models.Run) run).getStat("regeneration");
-                currentLifesteal = calculateLifesteal(run);
+                currentLifesteal = calculateLifesteal(run, player);
             }
         }
         
         boolean excludeRegeneration = currentRegen >= 4.0;
         boolean excludeVampireAura = currentLifesteal >= 4.0;
         
+        // Get already collected weapon mods (weapon mods can only be picked once)
+        Set<String> collectedWeaponMods = new HashSet<>();
+        Set<String> uniqueAuras = new HashSet<>();
+        Set<String> uniqueNovas = new HashSet<>();
+        Set<String> uniqueNonNovaMods = new HashSet<>();
+        if (player != null && run != null) {
+            List<com.eldor.roguecraft.models.PowerUp> collectedPowerUps;
+            if (run instanceof com.eldor.roguecraft.models.TeamRun) {
+                collectedPowerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps(player);
+            } else if (run instanceof com.eldor.roguecraft.models.Run) {
+                collectedPowerUps = ((com.eldor.roguecraft.models.Run) run).getCollectedPowerUps();
+            } else {
+                collectedPowerUps = new ArrayList<>();
+            }
+            
+            for (com.eldor.roguecraft.models.PowerUp powerUp : collectedPowerUps) {
+                if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD) {
+                    collectedWeaponMods.add(powerUp.getName());
+                    // Track novas and non-nova mods separately
+                    if (powerUp.getName().contains("Nova")) {
+                        uniqueNovas.add(powerUp.getName());
+                    } else {
+                        uniqueNonNovaMods.add(powerUp.getName());
+                    }
+                } else if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
+                    uniqueAuras.add(powerUp.getName());
+                }
+            }
+        }
+        
+        // Check if player has reached limits
+        boolean excludeAuras = uniqueAuras.size() >= 2;
+        boolean excludeNovas = uniqueNovas.size() >= 2;
+        boolean excludeNonNovaMods = uniqueNonNovaMods.size() >= 3;
+        
         List<PowerUp> powerUps = new ArrayList<>();
         Set<String> usedTypes = new HashSet<>();
         Random random = new Random();
-        int maxAttempts = 30; // Increased from 20 to account for exclusions
+        int maxAttempts = 50; // Increased to account for weapon mod exclusions
+        
+        // Calculate adjusted probabilities based on exclusions
+        // Base probabilities: weapon upgrade 22%, weapon mod 18%, aura 20%, synergy 10%, summon 10%, stat boost 20%
+        double weaponUpgradeProb = 0.22;
+        double weaponModProb = 0.18;
+        double auraProb = 0.20;
+        double synergyProb = 0.10;
+        double summonProb = 0.10;
+        double statBoostProb = 0.20;
+        
+        // Redistribute excluded types' probabilities proportionally
+        if (excludeAuras) {
+            // Redistribute aura's 20% proportionally to other types
+            double totalRemaining = weaponUpgradeProb + weaponModProb + synergyProb + summonProb + statBoostProb;
+            weaponUpgradeProb += (auraProb * weaponUpgradeProb / totalRemaining);
+            weaponModProb += (auraProb * weaponModProb / totalRemaining);
+            synergyProb += (auraProb * synergyProb / totalRemaining);
+            summonProb += (auraProb * summonProb / totalRemaining);
+            statBoostProb += (auraProb * statBoostProb / totalRemaining);
+            auraProb = 0.0;
+        }
+        
+        // Adjust weapon mod probability if novas are excluded (only exclude novas, not all weapon mods)
+        // We'll handle nova exclusion in the weapon mod generation itself
+        
+        // Normalize probabilities to sum to 1.0
+        double totalProb = weaponUpgradeProb + weaponModProb + auraProb + synergyProb + summonProb + statBoostProb;
+        if (totalProb > 0) {
+            weaponUpgradeProb /= totalProb;
+            weaponModProb /= totalProb;
+            auraProb /= totalProb;
+            synergyProb /= totalProb;
+            summonProb /= totalProb;
+            statBoostProb /= totalProb;
+        }
+        
+        // Calculate cumulative probabilities
+        double cumWeaponUpgrade = weaponUpgradeProb;
+        double cumWeaponMod = cumWeaponUpgrade + weaponModProb;
+        double cumAura = cumWeaponMod + auraProb;
+        double cumSynergy = cumAura + synergyProb;
+        double cumSummon = cumSynergy + summonProb;
+        // statBoost is the remainder (1.0)
         
         while (powerUps.size() < 3 && maxAttempts > 0) {
             maxAttempts--;
@@ -140,27 +221,69 @@ public class PowerUpManager {
             PowerUp powerUp = null;
             String uniqueKey = null;
             
-            if (roll < 0.22) {
-                // 22% chance for weapon upgrade
+            if (roll < cumWeaponUpgrade) {
+                // Weapon upgrade
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateWeaponUpgrade(playerLevel, luck);
                 uniqueKey = "weapon_upgrade";
-            } else if (roll < 0.42) {
-                // 18% chance for weapon mod
-                powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateWeaponMod(playerLevel, luck);
-                uniqueKey = "weapon_mod_" + powerUp.getName();
-            } else if (roll < 0.62) {
-                // 20% chance for aura
+            } else if (roll < cumWeaponMod) {
+                // Weapon mod
+                // Build exclusion list based on limits
+                Set<String> excludedModsForGeneration = new HashSet<>(collectedWeaponMods);
+                
+                // Exclude novas if limit reached (unless player already owns this nova)
+                if (excludeNovas) {
+                    String[] allMods = {"Piercing Shot", "Explosive Rounds", "Chain Lightning", "Frost Nova",
+                                       "Rapid Fire", "Homing Projectiles", "Multi-Shot", "Burn Effect"};
+                    for (String mod : allMods) {
+                        if (mod.contains("Nova") && !uniqueNovas.contains(mod)) {
+                            excludedModsForGeneration.add(mod);
+                        }
+                    }
+                }
+                
+                // Exclude non-nova mods if limit reached (unless player already owns this mod)
+                if (excludeNonNovaMods) {
+                    String[] allMods = {"Piercing Shot", "Explosive Rounds", "Chain Lightning", "Frost Nova",
+                                       "Rapid Fire", "Homing Projectiles", "Multi-Shot", "Burn Effect"};
+                    for (String mod : allMods) {
+                        if (!mod.contains("Nova") && !uniqueNonNovaMods.contains(mod)) {
+                            excludedModsForGeneration.add(mod);
+                        }
+                    }
+                }
+                
+                powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateWeaponMod(playerLevel, luck, excludedModsForGeneration);
+                uniqueKey = "weapon_mod_" + (powerUp != null ? powerUp.getName() : "");
+                
+                // Skip if player already has this weapon mod (weapon mods can only be picked once)
+                // Note: This check is redundant now since we're passing excludedModsForGeneration,
+                // but keeping it as a safety check
+                if (powerUp != null && collectedWeaponMods.contains(powerUp.getName())) {
+                    powerUp = null; // Don't add this one, try again
+                }
+                
+                // Additional check: if this is a non-nova mod and limit is reached, skip it
+                if (powerUp != null && !powerUp.getName().contains("Nova") && excludeNonNovaMods && 
+                    !uniqueNonNovaMods.contains(powerUp.getName())) {
+                    powerUp = null; // Don't add this mod, try again
+                }
+            } else if (roll < cumAura && !excludeAuras) {
+                // Aura (only if not excluded)
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateAura(playerLevel, luck, excludeVampireAura);
-                uniqueKey = "aura_" + powerUp.getName();
-            } else if (roll < 0.72) {
-                // 10% chance for synergy
+                uniqueKey = "aura_" + (powerUp != null ? powerUp.getName() : "");
+            } else if (roll < cumSynergy) {
+                // Synergy
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateSynergy(playerLevel, luck);
-                uniqueKey = "synergy_" + powerUp.getName();
+                uniqueKey = "synergy_" + (powerUp != null ? powerUp.getName() : "");
+            } else if (roll < cumSummon) {
+                // Summon
+                powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateSummon(playerLevel, luck);
+                uniqueKey = "summon_" + (powerUp != null ? powerUp.getName() : "");
             } else {
-                // 30% chance for stat boost (SHRINES REMOVED - now physical in arena)
+                // Stat boost (fallback)
                 powerUp = com.eldor.roguecraft.models.DynamicPowerUp.generateStatBoost(playerLevel, luck, excludeRegeneration);
                 // Extract stat name from ID for uniqueness
-                String statName = powerUp.getId().replaceAll("dynamic_", "").replaceAll("_\\d+", "");
+                String statName = powerUp != null ? powerUp.getId().replaceAll("dynamic_", "").replaceAll("_\\d+", "") : "";
                 uniqueKey = "stat_" + statName;
             }
             
@@ -191,18 +314,29 @@ public class PowerUpManager {
      * Overload for backward compatibility
      */
     public List<PowerUp> generateDynamicPowerUps(int playerLevel, double luck) {
-        return generateDynamicPowerUps(playerLevel, luck, null);
+        return generateDynamicPowerUps(playerLevel, luck, null, null);
+    }
+    
+    /**
+     * Overload for backward compatibility (with run but no player)
+     */
+    public List<PowerUp> generateDynamicPowerUps(int playerLevel, double luck, Object run) {
+        return generateDynamicPowerUps(playerLevel, luck, run, null);
     }
     
     /**
      * Calculate current lifesteal percentage from Vampire Aura power-ups
      */
-    private double calculateLifesteal(Object run) {
+    private double calculateLifesteal(Object run, org.bukkit.entity.Player player) {
         if (run == null) return 0.0;
         
         List<com.eldor.roguecraft.models.PowerUp> powerUps;
         if (run instanceof com.eldor.roguecraft.models.TeamRun) {
-            powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps();
+            if (player != null) {
+                powerUps = ((com.eldor.roguecraft.models.TeamRun) run).getCollectedPowerUps(player);
+            } else {
+                powerUps = new ArrayList<>();
+            }
         } else if (run instanceof com.eldor.roguecraft.models.Run) {
             powerUps = ((com.eldor.roguecraft.models.Run) run).getCollectedPowerUps();
         } else {
@@ -221,6 +355,13 @@ public class PowerUpManager {
         }
         
         return totalLifesteal;
+    }
+    
+    /**
+     * Overload for backward compatibility
+     */
+    private double calculateLifesteal(Object run) {
+        return calculateLifesteal(run, null);
     }
 
     private PowerUp.Rarity determineRarityForLevel(int level) {

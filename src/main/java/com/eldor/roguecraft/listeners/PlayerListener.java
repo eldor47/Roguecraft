@@ -18,6 +18,7 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerVelocityEvent;
+import org.bukkit.Bukkit;
 
 import java.util.UUID;
 
@@ -28,6 +29,83 @@ public class PlayerListener implements Listener {
         this.plugin = plugin;
     }
 
+    /**
+     * Handle Totem of Undying - prevent death and revive player
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onEntityDamageForTotem(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player)) return;
+        
+        Player player = (Player) event.getEntity();
+        
+        // Check if player has an active run
+        if (!plugin.getRunManager().hasActiveRun(player)) {
+            return;
+        }
+        
+        // Check for Totem of Undying gacha item
+        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
+        Run run = null;
+        if (teamRun == null) {
+            run = plugin.getRunManager().getRun(player);
+        }
+        
+        com.eldor.roguecraft.models.GachaItem totemItem = null;
+        if (teamRun != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                if (item.getId().equals("totem_of_undying")) {
+                    totemItem = item;
+                    break;
+                }
+            }
+        } else if (run != null) {
+            for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
+                if (item.getId().equals("totem_of_undying")) {
+                    totemItem = item;
+                    break;
+                }
+            }
+        }
+        
+        // If player has Totem of Undying and this would kill them, prevent death
+        if (totemItem != null) {
+            double finalDamage = event.getFinalDamage();
+            double currentHealth = player.getHealth();
+            
+            if (currentHealth - finalDamage <= 0) {
+                // Prevent death
+                event.setCancelled(true);
+                
+                // Remove the totem item (one-time use)
+                if (teamRun != null) {
+                    teamRun.removeGachaItem(player, "totem_of_undying");
+                } else if (run != null) {
+                    run.removeGachaItem("totem_of_undying");
+                }
+                
+                // Revive player to full health
+                double maxHealth = player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getValue();
+                player.setHealth(maxHealth);
+                player.setAbsorptionAmount(4.0); // Give absorption hearts like vanilla totem
+                player.setFireTicks(0);
+                
+                // Schedule health set again after 1 tick to ensure it's fully applied
+                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (player.isOnline() && !player.isDead()) {
+                        player.setHealth(maxHealth);
+                    }
+                });
+                
+                // Visual and audio effects
+                player.getWorld().spawnParticle(org.bukkit.Particle.TOTEM_OF_UNDYING, player.getLocation(), 30, 0.5, 1.0, 0.5, 0.2);
+                player.playSound(player.getLocation(), org.bukkit.Sound.ITEM_TOTEM_USE, 1.0f, 1.0f);
+                
+                // Message
+                player.sendMessage("§6§lTOTEM OF UNDYING! §eYou have been revived! The run continues...");
+            }
+        }
+    }
+    
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
@@ -50,36 +128,9 @@ public class PlayerListener implements Listener {
     
     @EventHandler
     public void onPlayerMove(PlayerMoveEvent event) {
-        Player player = event.getPlayer();
-        
-        // Check if player is in a team run
-        TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
-        if (teamRun != null && teamRun.isActive()) {
-            // If ANY team member is in a GUI, block movement for ALL team members
-            if (teamRun.hasAnyPlayerInGUI()) {
-                // Only cancel if player actually moved (not just rotated)
-                if (event.getFrom().getBlockX() != event.getTo().getBlockX() ||
-                    event.getFrom().getBlockY() != event.getTo().getBlockY() ||
-                    event.getFrom().getBlockZ() != event.getTo().getBlockZ()) {
-                    event.setCancelled(true);
-                    // Teleport player back to prevent any movement
-                    event.setTo(event.getFrom());
-                }
-                return;
-            }
-        }
-        
-        // Also check individual GUI tracking
-        if (plugin.getGuiManager().isPlayerInGUI(player.getUniqueId()) || 
-            plugin.getShrineManager().isPlayerInShrineGUI(player.getUniqueId())) {
-            // Only cancel if player actually moved (not just rotated)
-            if (event.getFrom().getBlockX() != event.getTo().getBlockX() ||
-                event.getFrom().getBlockY() != event.getTo().getBlockY() ||
-                event.getFrom().getBlockZ() != event.getTo().getBlockZ()) {
-                event.setCancelled(true);
-                event.setTo(event.getFrom());
-            }
-        }
+        // Movement is now allowed during GUI selection
+        // Players can walk around, but weapons are frozen and enemies remain frozen
+        // Shrine channeling movement blocking is handled separately in ShrineListener
     }
     
     @EventHandler(priority = EventPriority.HIGH)
@@ -140,8 +191,39 @@ public class PlayerListener implements Listener {
     
     @EventHandler
     public void onPlayerRespawn(PlayerRespawnEvent event) {
-        // Ensure weapon is fully stopped after respawn
-        plugin.getWeaponManager().stopAutoAttack(event.getPlayer());
+        Player player = event.getPlayer();
+        
+        // Comprehensive cleanup on respawn to ensure player can interact normally
+        // Stop weapon auto-attack
+        plugin.getWeaponManager().stopAutoAttack(player);
+        
+        // Clean up any active shrine channeling/GUI tasks
+        plugin.getShrineManager().cleanupPlayerChanneling(player);
+        
+        // Clear GUI queue
+        plugin.getGuiManager().clearQueue(player.getUniqueId());
+        
+        // Reset player attributes to default
+        plugin.getGameManager().resetPlayerAttributes(player);
+        
+        // Ensure player can interact with blocks and break them
+        // Clear any metadata that might prevent interaction
+        player.removeMetadata("roguecraft_in_run", plugin);
+        player.removeMetadata("roguecraft_frozen", plugin);
+        
+        // Clean up all gacha item metadata
+        plugin.getGameManager().cleanupGachaMetadata(player);
+        
+        // ProtocolLib: Clean up fake entities and boss bars
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            plugin.getProtocolLibIntegration().cleanupPlayer(player);
+        }
+        
+        // Ensure run is fully ended (in case death handler didn't complete)
+        if (plugin.getRunManager().hasActiveRun(player)) {
+            Arena arena = plugin.getArenaManager().getDefaultArena();
+            plugin.getGameManager().endRun(player.getUniqueId(), arena);
+        }
     }
     
     /**
@@ -229,8 +311,34 @@ public class PlayerListener implements Listener {
         }
     }
     
-    @EventHandler(priority = EventPriority.HIGH)
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityDamage(EntityDamageEvent event) {
+        // Prevent player damage to decoy villagers, but allow mob damage
+        if (event.getEntity() instanceof org.bukkit.entity.Villager && event.getEntity().hasMetadata("roguecraft_decoy")) {
+            // Only cancel if damage is from a player
+            if (event instanceof org.bukkit.event.entity.EntityDamageByEntityEvent) {
+                org.bukkit.event.entity.EntityDamageByEntityEvent byEntityEvent = (org.bukkit.event.entity.EntityDamageByEntityEvent) event;
+                if (byEntityEvent.getDamager() instanceof Player) {
+                    event.setCancelled(true);
+                    return;
+                }
+            }
+            // Allow mob damage to pass through
+        }
+        
+        // Prevent player damage to summons, but allow mob damage
+        if (event.getEntity().hasMetadata("roguecraft_summon")) {
+            // Only cancel if damage is from a player
+            if (event instanceof org.bukkit.event.entity.EntityDamageByEntityEvent) {
+                org.bukkit.event.entity.EntityDamageByEntityEvent byEntityEvent = (org.bukkit.event.entity.EntityDamageByEntityEvent) event;
+                if (byEntityEvent.getDamager() instanceof Player) {
+                    event.setCancelled(true);
+                    return;
+                }
+            }
+            // Allow mob damage to pass through
+        }
+        
         // Prevent sunlight damage to plugin-spawned undead mobs
         if (event.getEntity() instanceof LivingEntity && !(event.getEntity() instanceof Player)) {
             LivingEntity entity = (LivingEntity) event.getEntity();
@@ -281,19 +389,19 @@ public class PlayerListener implements Listener {
                             }
                         }
                         
-                        // Base resistance: 50% (50% damage taken) - balanced middle ground
-                        // Scale up resistance for overleveled players: +1.5% per level above 10
-                        // Example: Level 10 = 50%, Level 20 = 65%, Level 30 = 80% (capped at 90%)
-                        double baseResistance = 0.50; // 50% base (balanced)
+                        // Base resistance: 50% (50% damage taken) - increased for harder difficulty
+                        // Scale up resistance for overleveled players: +1% per level above 10
+                        // Example: Level 10 = 50%, Level 20 = 60%, Level 30 = 70% (capped at 75%)
+                        double baseResistance = 0.50; // 50% base (increased from 30%)
                         double levelScaling = 0.0;
                         
                         if (playerLevel > 10) {
-                            // Add 1.5% resistance per level above 10
-                            levelScaling = (playerLevel - 10) * 0.015; // 1.5% per level
+                            // Add 1% resistance per level above 10 (increased from 0.5%)
+                            levelScaling = (playerLevel - 10) * 0.01; // 1% per level
                         }
                         
                         double totalResistance = baseResistance + levelScaling;
-                        totalResistance = Math.min(0.90, totalResistance); // Cap at 90% max
+                        totalResistance = Math.min(0.75, totalResistance); // Cap at 75% max (increased from 50%)
                         
                         // Apply resistance to damage
                         double originalDamage = event.getDamage();
@@ -327,10 +435,12 @@ public class PlayerListener implements Listener {
                     // Only apply resistance for wave 10+ (when armor would have been applied)
                     if (wave >= 10) {
                         // Calculate resistance based on wave
-                        // Wave 10-15: 10% resistance (like Iron armor)
-                        // Wave 16-20: 20% resistance (like Diamond armor)
-                        // Wave 21+: Start at 30%, then scale continuously for infinite waves
-                        // Infinite waves: +3% resistance per wave beyond 20 (60% at wave 30, caps at 98% max)
+                        // Increased resistance for harder difficulty
+                        // Wave 10-15: 10% resistance (increased from 5%)
+                        // Wave 16-20: 15% resistance (increased from 10%)
+                        // Wave 21: 20% resistance (increased from 15%)
+                        // Infinite waves: Start at 20%, then scale +5.33% per wave beyond 20
+                        // Wave 25 = 46.7%, Wave 30 = 73.3%, Wave 35 = 100% (invulnerability)
                         double resistancePercent = 0.0;
                         
                         // Get max wave from config
@@ -338,19 +448,19 @@ public class PlayerListener implements Listener {
                         boolean isInfiniteWave = wave > maxWave;
                         
                         if (isInfiniteWave) {
-                            // Infinite wave scaling: 30% base + 5% per wave beyond maxWave
-                            // Wave 34 = 100% resistance (invulnerability) - game ends when mobs become invulnerable
-                            // No cap - allows reaching 100% to force game end
+                            // Infinite wave scaling: 20% base + 5.33% per wave beyond maxWave
+                            // Reaches 100% resistance (impossible) at wave 35
+                            // Wave 22 = 30.7%, Wave 25 = 46.7%, Wave 30 = 73.3%, Wave 35 = 100% (impossible)
                             int infiniteWaveNumber = wave - maxWave;
-                            resistancePercent = 0.30 + (infiniteWaveNumber * 0.05); // 5% per infinite wave
+                            resistancePercent = 0.20 + (infiniteWaveNumber * 0.0533); // 5.33% per infinite wave (reaches 100% at wave 35)
                             resistancePercent = Math.min(1.0, resistancePercent); // Cap at 100% (invulnerability)
                         } else if (wave >= 21) {
                             // Wave 21 is the last regular wave
-                            resistancePercent = 0.30; // 30% damage reduction
+                            resistancePercent = 0.20; // 20% damage reduction (increased from 15%)
                         } else if (wave >= 16) {
-                            resistancePercent = 0.20; // 20% damage reduction
+                            resistancePercent = 0.15; // 15% damage reduction (increased from 10%)
                         } else {
-                            resistancePercent = 0.10; // 10% damage reduction
+                            resistancePercent = 0.10; // 10% damage reduction (increased from 5%)
                         }
                         
                         // Legendary mobs get additional resistance bonus on top of elite resistance
@@ -372,11 +482,31 @@ public class PlayerListener implements Listener {
             
             // Clear custom name when entity is about to die (health drops to 0 or below)
             // This prevents death logs from appearing for named entities
+            // MUST be done at HIGHEST priority to ensure it happens before death message is generated
             if (entity.getHealth() - event.getFinalDamage() <= 0) {
                 try {
+                    // Clear immediately and synchronously - this MUST happen before death message
                     if (entity.getCustomName() != null) {
                         entity.setCustomName(null);
                         entity.setCustomNameVisible(false);
+                    }
+                    // Also clear glowing to prevent any visual indicators
+                    if (entity.isGlowing()) {
+                        entity.setGlowing(false);
+                    }
+                    // Remove from scoreboard teams immediately
+                    try {
+                        org.bukkit.scoreboard.Scoreboard scoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
+                        org.bukkit.scoreboard.Team legendaryTeam = scoreboard.getTeam("roguecraft_legendary_gold");
+                        if (legendaryTeam != null && legendaryTeam.hasEntry(entity.getUniqueId().toString())) {
+                            legendaryTeam.removeEntry(entity.getUniqueId().toString());
+                        }
+                        org.bukkit.scoreboard.Team decoyTeam = scoreboard.getTeam("roguecraft_decoy_purple");
+                        if (decoyTeam != null && decoyTeam.hasEntry(entity.getUniqueId().toString())) {
+                            decoyTeam.removeEntry(entity.getUniqueId().toString());
+                        }
+                    } catch (Exception e) {
+                        // Ignore
                     }
                 } catch (Exception e) {
                     // Ignore - entity might be invalid

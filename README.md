@@ -42,6 +42,9 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 - **Soft Dependencies** - Optional integrations with ProtocolLib, PlaceholderAPI, WorldGuard, and Vault
 - **Team Synchronization** - Shared XP, levels, and weapon selection for co-op teams
 - **Attribute-Based Stats** - Uses Minecraft's native attribute system for health, speed, and armor (visible in HUD like hearts)
+- **SQLite Database Storage** - Tracks all runs with scores, stats, items, and power-ups (configurable, can be disabled)
+- **Run History & Leaderboards** - View your past runs and compete on global leaderboards
+- **Arena Setup Commands** - Easy in-game arena configuration with WorldEdit integration
 
 ## Requirements
 
@@ -54,7 +57,7 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 
 - **ProtocolLib** - Custom visual effects and packet-based telegraphs
 - **PlaceholderAPI** - Display live stats on HUDs and scoreboards
-- **WorldGuard** - Arena region protection and event triggers
+- **WorldGuard/WorldEdit** - Arena region protection and selection tools for arena setup
 - **Vault** - Economy and cosmetic purchases
 
 ## Installation
@@ -63,13 +66,41 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 2. **Place** the jar in your server's `plugins` folder
 3. **Start** your server to generate configuration files
 4. **Stop** your server
-5. **Edit** `plugins/Roguecraft/config.yml` and configure arenas
-6. **Edit** `plugins/Roguecraft/configs/balance.yml` and `spawns.yml` as needed
-7. **Start** your server again
+5. **Set up an arena** (see [Arena Setup](#arena-setup) section):
+   - Use in-game commands: `/rc arena setstart`, `/rc arena setcenter`, `/rc arena setradius`
+   - Or use WorldEdit selection: `/rc arena fromwg`
+   - Or manually edit `config.yml`
+6. **Configure database** (optional):
+   - Edit `plugins/Roguecraft/config.yml`
+   - Set `database.enabled: true` to enable run tracking (default: enabled)
+   - Set `database.enabled: false` to disable database storage
+7. **Edit** `plugins/Roguecraft/configs/balance.yml` and `spawns.yml` as needed
+8. **Start** your server again
 
 ## Quick Start
 
-1. **Set up an arena** in `config.yml`:
+1. **Set up an arena** (choose one method):
+   
+   **Option A: In-Game Commands (Recommended)**
+   ```
+   # Stand where you want players to spawn
+   /rc arena setstart
+   
+   # Stand at the center of your arena
+   /rc arena setcenter
+   
+   # Set the radius (in blocks)
+   /rc arena setradius 50
+   ```
+   
+   **Option B: WorldEdit Selection**
+   ```
+   # Use WorldEdit's selection tool (//wand) to select your arena area
+   /rc arena fromwg
+   ```
+   
+   **Option C: Manual Configuration**
+   Edit `config.yml`:
    ```yaml
    arenas:
      default:
@@ -95,7 +126,16 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 
 7. **Survive** as long as possible!
 
+8. **View your progress**:
+   ```
+   /rc history        # View your run history
+   /rc leaderboard    # View top runs
+   /rc run <run_id>   # View detailed run information
+   ```
+
 ## Commands
+
+### Player Commands
 
 | Command | Description | Permission |
 |---------|-------------|------------|
@@ -104,7 +144,33 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 | `/rc stop` | End your current run | `roguecraft.play` |
 | `/rc stats` | View your current run statistics | `roguecraft.play` |
 | `/rc gui` | Open power-up selection GUI | `roguecraft.play` |
+| `/rc history [limit]` | View your run history (default: 10, max: 50) | `roguecraft.play` |
+| `/rc leaderboard [limit]` or `/rc lb [limit]` | View top runs leaderboard (default: 10, max: 50) | `roguecraft.play` |
+| `/rc run <run_id>` | View detailed information about a specific run | `roguecraft.play` |
+
+### Team Commands
+
+| Command | Description | Permission |
+|---------|-------------|------------|
+| `/rc invite <player>` | Invite a player to your team | `roguecraft.play` |
+| `/rc accept` | Accept a team invite | `roguecraft.play` |
+| `/rc decline` | Decline a team invite | `roguecraft.play` |
+| `/rc leave` | Leave your current team | `roguecraft.play` |
+| `/rc ready` | Mark yourself as ready to start | `roguecraft.play` |
+| `/rc team` | View team status | `roguecraft.play` |
+
+### Admin Commands
+
+| Command | Description | Permission |
+|---------|-------------|------------|
 | `/rc reload` | Reload configuration | `roguecraft.admin.reload` |
+| `/rc give <item_id>` | Give yourself a gacha item (testing) | `roguecraft.admin.give` |
+| `/rc listitems` | List all available gacha items | `roguecraft.admin.give` |
+| `/rc arena setstart [arena_id]` | Set spawn point to your current location | `roguecraft.admin.arena` |
+| `/rc arena setcenter [arena_id]` | Set arena center to your current location | `roguecraft.admin.arena` |
+| `/rc arena setradius <radius> [arena_id]` | Set arena radius | `roguecraft.admin.arena` |
+| `/rc arena fromwg [arena_id]` | Use WorldEdit selection to set center and radius | `roguecraft.admin.arena` |
+| `/rc arena list` | List all configured arenas | `roguecraft.admin.arena` |
 
 **Aliases:** `/roguecraft`, `/rc`, `/roguelike`
 
@@ -115,8 +181,9 @@ A Minecraft server plugin that delivers a simple, high-replayability roguelike/r
 | `roguecraft.play` | Allows players to play Roguecraft | `true` |
 | `roguecraft.admin` | All admin commands | `op` |
 | `roguecraft.admin.reload` | Reload configuration | `op` |
-| `roguecraft.admin.arena` | Manage arenas | `op` |
+| `roguecraft.admin.arena` | Manage arenas (setstart, setcenter, setradius, fromwg) | `op` |
 | `roguecraft.admin.setup` | Set up arena regions | `op` |
+| `roguecraft.admin.give` | Give gacha items for testing | `op` |
 | `roguecraft.*` | All permissions | `op` |
 
 ## Weapon System
@@ -229,6 +296,7 @@ Power-ups are generated on-the-fly in 6 categories:
    - **Chain Lightning** - Lightning strikes chain to nearby enemies
    - **Frost Nova** - Ice shards create area slow/freeze effects
    - **Burn Effect** - Fire attacks set enemies on fire
+   - **Power-Up Limits**: Max 3 unique non-nova weapon mods, max 2 unique novas (can stack same mods)
    - Icon: Blaze Powder
 
 4. **AURA Power-Ups** (can appear in power-up pool) ✅ **FULLY IMPLEMENTED**
@@ -240,7 +308,9 @@ Power-ups are generated on-the-fly in 6 categories:
    - **Lightning Aura** ✅ - Chain lightning every 3 seconds
    - **Poison Aura** ✅ - Poison nearby enemies for damage/sec
    - **Shield Aura** ✅ - Absorb damage before taking HP loss
+   - **Power-Up Limits**: Max 2 unique auras (can stack same aura)
    - **Note:** Auras pause when player is in GUI
+   - **Visual Effects**: Reduced particle count (2 per aura) that follow the player smoothly
    - Icon: Totem of Undying
 
 5. **SHRINE Power-Ups** (physical shrines in arena) ✅ **FULLY IMPLEMENTED**
@@ -257,8 +327,7 @@ Power-ups are generated on-the-fly in 6 categories:
    - **Chain Reaction** ✅ - Kills have chance to trigger free attack
    - **Berserker Mode** ✅ - Gain damage when below 30% HP
    - **Glass Cannon** ✅ - +damage, -50% max HP (applied immediately on selection)
-   - **Immortal Build** ✅ - Cannot die for X seconds after fatal damage (30s cooldown)
-   - **Lucky Streak** ✅ - Every 20 kills (scales with value, min 5) grants random power-up effect
+   - **Lucky Streak** ✅ - Every 20 kills grants random power-up effect
    - **Note:** Synergies pause when player is in GUI
    - Icon: Nether Star
 
@@ -269,7 +338,7 @@ Power-ups are generated on-the-fly in 6 categories:
 - Weapon Upgrades (1-3 levels based on rarity)
 - Physical Shrines (8 types, 3 variants each)
 - All AURA effects (Vampire, Thorns, Regeneration, Fire, Ice, Lightning, Poison, Shield)
-- All SYNERGY effects (Critical Mass, Elemental Fusion, Rapid Escalation, Chain Reaction, Berserker Mode, Glass Cannon, Immortal Build, Lucky Streak)
+- All SYNERGY effects (Critical Mass, Elemental Fusion, Rapid Escalation, Chain Reaction, Berserker Mode, Glass Cannon, Lucky Streak)
 - All WEAPON_MOD effects (Rapid Fire, Homing Projectiles, Explosive Rounds, Piercing Shot, Chain Lightning, Frost Nova, Burn Effect)
 
 ### Rarity Tiers
@@ -297,6 +366,11 @@ When you level up:
 - **Weapon Pause** - Auto-attacks stop during selection
 - **Inventory Auto-Close** - Player's inventory automatically closes if open
 - **Increased Damage/Crit Spawn** - Damage and crit chance power-ups have higher spawn rates (20% and 18% respectively)
+- **Power-Up Limits** - Prevents overpowered builds:
+  - Max 2 unique auras (can stack same aura)
+  - Max 2 unique novas (can stack same nova)
+  - Max 3 unique non-nova weapon mods (can stack same mod)
+  - Limits prevent new unique power-ups from appearing in rolls once reached
 
 ## Visual Feedback Systems
 
@@ -403,32 +477,77 @@ game:
   night-duration: 900
   wave-interval: 10
   sunlight-protection: true  # Automatically place barrier blocks above arena to prevent sunlight damage
+  disable-hunger: true       # Disable hunger during runs
+
+# Database Settings
+database:
+  # Enable SQLite database storage for run tracking and leaderboards
+  enabled: true
+  # Auto-save runs when they end
+  auto-save: true
 
 # Multiplayer Settings
 multiplayer:
-  enabled: true
-  hp-multiplier-per-player: 1.5       # Each player adds 50% more mob HP
-  spawn-multiplier-per-player: 1.3    # Each player adds 30% more mob spawns
-
-# Visualization Settings
-visualization:
-  enabled: true
-  method: "WORLD_BORDER"    # Arena boundary visualization
+  scale-hp: true
+  scale-spawns: true
+  hp-multiplier-per-player: 0.3       # Each player adds 30% more mob HP
+  spawn-multiplier-per-player: 0.5   # Each player adds 50% more mob spawns
 
 # Drop System
 drops:
   disable-normal-drops: true  # Disable vanilla mob drops
   xp-token:
     enabled: true
-    base-chance: 0.05         # 5% base chance
-    elite-bonus: 0.15         # +15% for elites (total 20%)
-    xp-amount: 50             # XP per token
+    xp-amount: 5              # Base XP per token (scales with level)
   heart:
     enabled: true
     base-chance: 0.03         # 3% base chance
     elite-bonus: 0.10         # +10% for elites (total 13%)
-    heal-amount: 4.0          # Health restored
+    heal-amount: 10.0         # Health restored per heart
+  powerup:
+    enabled: true
+    base-chance: 0.02         # 2% base chance (scales with drop_rate stat)
 ```
+
+### Arena Setup
+
+You can configure arenas in two ways:
+
+**Method 1: Manual Configuration (config.yml)**
+```yaml
+arenas:
+  default:
+    name: "Default Arena"
+    default: true
+    spawn: world,0,100,0,0,0    # Format: world,x,y,z,yaw,pitch
+    center: world,0,100,0         # Arena center for mob spawning
+    radius: 50.0                  # Arena radius in blocks
+```
+
+**Method 2: In-Game Commands (Recommended)**
+```
+# Set spawn point (where players teleport when starting)
+/rc arena setstart [arena_id]
+
+# Set arena center (where mobs spawn)
+/rc arena setcenter [arena_id]
+
+# Set arena radius
+/rc arena setradius <radius> [arena_id]
+
+# Use WorldEdit selection to set center and radius automatically
+# First, use WorldEdit's selection tool (//wand) to select an area
+/rc arena fromwg [arena_id]
+
+# List all configured arenas
+/rc arena list
+```
+
+**WorldEdit Integration:**
+- Install WorldEdit or WorldGuard (WorldEdit is included with WorldGuard)
+- Use WorldEdit's selection tool (`//wand`) to select an area
+- Run `/rc arena fromwg` to automatically set the center and radius from your selection
+- The plugin will calculate the center point and use the largest dimension as the radius
 
 ### Balance Config (`configs/balance.yml`)
 
@@ -511,6 +630,57 @@ spawns:
 ```
 
 **Note:** Power-up configuration (`cards.yml`) is no longer used - all power-ups are generated dynamically!
+
+## Database & Run Tracking
+
+### SQLite Database System
+
+Roguecraft includes a built-in SQLite database system for tracking runs, calculating scores, and maintaining leaderboards.
+
+**Features:**
+- **Automatic Run Saving** - All runs are automatically saved when they end
+- **Score Calculation** - Scores based on: level, XP, kills, gold, and time survived
+- **Run History** - View your past runs with `/rc history`
+- **Leaderboards** - Compete on global leaderboards with `/rc leaderboard`
+- **Detailed Run View** - See all stats, power-ups, and items from any run with `/rc run <run_id>`
+- **Team Run Support** - Tracks individual player stats in team runs
+- **Configurable** - Can be disabled in `config.yml` if not needed
+
+**Score Formula:**
+```
+Score = (Level × 1000) + (XP × 10) + (Kills × 50) + (Gold × 5) + (Time_Seconds × 2)
+```
+
+**Database Location:**
+- File: `plugins/Roguecraft/runs.db`
+- Created automatically when first run is saved
+- Only created if `database.enabled: true` in config
+
+**Configuration:**
+```yaml
+database:
+  enabled: true    # Set to false to disable database storage
+  auto-save: true  # Automatically save runs when they end
+```
+
+**Commands:**
+- `/rc history [limit]` - View your last N runs (default: 10, max: 50)
+- `/rc leaderboard [limit]` or `/rc lb [limit]` - View top N runs (default: 10, max: 50)
+- `/rc run <run_id>` - View detailed information about a specific run
+
+**What's Tracked:**
+- Run information (start/end time, duration, wave, difficulty, score)
+- Player data (level, XP, kills, gold, weapon, individual score)
+- Player stats (health, damage, speed, armor, crit, luck, etc.)
+- Power-ups collected (all power-ups with rarity and type)
+- Gacha items collected (all items with rarity)
+
+**Disabling Database:**
+If you don't want to use the database system:
+1. Set `database.enabled: false` in `config.yml`
+2. Restart your server
+3. Database file won't be created, and run saving will be skipped
+4. History/leaderboard commands will show a message that storage is disabled
 
 ## Gameplay Loop
 

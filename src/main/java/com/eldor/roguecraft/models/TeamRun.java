@@ -246,6 +246,17 @@ public class TeamRun {
         addGachaItem(player.getUniqueId(), item);
     }
     
+    public void removeGachaItem(UUID playerId, String itemId) {
+        List<com.eldor.roguecraft.models.GachaItem> items = playerGachaItems.get(playerId);
+        if (items != null) {
+            items.removeIf(item -> item.getId().equals(itemId));
+        }
+    }
+    
+    public void removeGachaItem(Player player, String itemId) {
+        removeGachaItem(player.getUniqueId(), itemId);
+    }
+    
     // Legacy methods for compatibility
     public List<PowerUp> getCollectedPowerUps() {
         // Return combined list of all players' power-ups (for compatibility)

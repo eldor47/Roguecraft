@@ -117,6 +117,11 @@ public class WeaponManager {
             }
             
             if (entity instanceof LivingEntity && !(entity instanceof Player) && !entity.isDead()) {
+                // Exclude decoy villagers and summons from weapon targeting
+                if (entity.hasMetadata("roguecraft_decoy") || entity.hasMetadata("roguecraft_summon")) {
+                    continue;
+                }
+                
                 LivingEntity living = (LivingEntity) entity;
                 double distSq = playerLoc.distanceSquared(living.getLocation());
                 
@@ -131,6 +136,12 @@ public class WeaponManager {
     }
     
     public void attackWithWeapon(Player player, LivingEntity target, Weapon weapon) {
+        // ProtocolLib: Create visual telegraph for attack
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            double damage = calculateFinalDamage(player, weapon.getDamage(), target);
+            plugin.getProtocolLibIntegration().createAttackTelegraph(player, target.getLocation(), weapon.getType(), damage);
+        }
+        
         switch (weapon.getType()) {
             case FIREBALL:
                 launchFireball(player, target, weapon);
@@ -243,9 +254,14 @@ public class WeaponManager {
             }
             
             finalDamage *= effectiveCritDamage;
-            // Visual feedback for crit
+            // Enhanced visual feedback for crit using ProtocolLib
             if (target != null) {
-                player.getWorld().spawnParticle(Particle.CRIT, target.getEyeLocation(), 20, 0.5, 0.5, 0.5, 0.1);
+                if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                    plugin.getProtocolLibIntegration().showCriticalHitEffect(player, target, finalDamage);
+                } else {
+                    // Fallback to basic particles
+                    player.getWorld().spawnParticle(Particle.CRIT, target.getEyeLocation(), 20, 0.5, 0.5, 0.5, 0.1);
+                }
             }
             player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_ATTACK_CRIT, 0.5f, 1.5f);
             
@@ -255,13 +271,13 @@ public class WeaponManager {
             }
         }
         
-        // Boss damage cap: Maximum 10% of boss's max health per hit
-        // This prevents one-shotting bosses regardless of damage scaling
+        // Boss damage cap: Maximum 12% of boss's max health per hit (reduced from 20% for harder difficulty)
+        // This prevents one-shotting bosses but makes them more challenging
         if (target != null) {
             boolean isBoss = target.hasMetadata("roguecraft_boss") || target.hasMetadata("roguecraft_elite_boss");
             if (isBoss) {
                 double maxHealth = target.getMaxHealth();
-                double maxDamagePerHit = maxHealth * 0.10; // 10% of max health
+                double maxDamagePerHit = maxHealth * 0.12; // 12% of max health (reduced from 20%)
                 finalDamage = Math.min(finalDamage, maxDamagePerHit);
             }
         }
@@ -418,8 +434,12 @@ public class WeaponManager {
     public void applyWeaponModEffects(Player player, LivingEntity target) {
         // Burn Effect - set enemies on fire
         if (hasWeaponMod(player, "Burn Effect")) {
-            target.setFireTicks(100); // 5 seconds of fire
+            // Use Math.max to ensure fire ticks don't decrease if already on fire
+            int currentFireTicks = target.getFireTicks();
+            int newFireTicks = Math.max(currentFireTicks, 100); // 5 seconds of fire (100 ticks)
+            target.setFireTicks(newFireTicks);
             target.getWorld().spawnParticle(Particle.FLAME, target.getLocation(), 10, 0.3, 0.5, 0.3, 0.01);
+            target.getWorld().playSound(target.getLocation(), Sound.ENTITY_BLAZE_AMBIENT, 0.3f, 1.5f);
         }
         
         // Frost Nova - slow/freeze enemies
@@ -508,7 +528,17 @@ public class WeaponManager {
             for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
                 if (item.getId().equals("ice_crystal")) {
                     if (random.nextDouble() < item.getValue()) {
-                        // Ice Crystal - freeze effect (stacks - each item procs independently)
+                        // Ice Crystal - freeze effect + damage (stacks - each item procs independently)
+                        // Deal ice damage (50% of base weapon damage)
+                        double iceDamage = 0.0;
+                        Weapon playerWeapon = teamRun.getWeapon(player);
+                        if (playerWeapon != null) {
+                            iceDamage = playerWeapon.getDamage() * 0.5; // 50% of weapon damage
+                        }
+                        if (iceDamage > 0) {
+                            double finalIceDamage = calculateFinalDamage(player, iceDamage, target);
+                            target.damage(finalIceDamage, player);
+                        }
                         target.addPotionEffect(new org.bukkit.potion.PotionEffect(
                             org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
                         target.setFreezeTicks(100);
@@ -523,7 +553,17 @@ public class WeaponManager {
             for (com.eldor.roguecraft.models.GachaItem item : run.getCollectedGachaItems()) {
                 if (item.getId().equals("ice_crystal")) {
                     if (random.nextDouble() < item.getValue()) {
-                        // Ice Crystal - freeze effect (stacks - each item procs independently)
+                        // Ice Crystal - freeze effect + damage (stacks - each item procs independently)
+                        // Deal ice damage (50% of base weapon damage)
+                        double iceDamage = 0.0;
+                        Weapon playerWeapon = run.getWeapon();
+                        if (playerWeapon != null) {
+                            iceDamage = playerWeapon.getDamage() * 0.5; // 50% of weapon damage
+                        }
+                        if (iceDamage > 0) {
+                            double finalIceDamage = calculateFinalDamage(player, iceDamage, target);
+                            target.damage(finalIceDamage, player);
+                        }
                         target.addPotionEffect(new org.bukkit.potion.PotionEffect(
                             org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
                         target.setFreezeTicks(100);
@@ -541,7 +581,27 @@ public class WeaponManager {
             if (meta.value() instanceof com.eldor.roguecraft.models.GachaItem) {
                 com.eldor.roguecraft.models.GachaItem item = (com.eldor.roguecraft.models.GachaItem) meta.value();
                 if (random.nextDouble() < item.getValue()) {
-                    // Ice Crystal - freeze effect
+                    // Ice Crystal - freeze effect + damage
+                    // Deal ice damage (50% of base weapon damage)
+                    double iceDamage = 0.0;
+                    Weapon playerWeapon = null;
+                    TeamRun tr = plugin.getRunManager().getTeamRun(player);
+                    Run r = null;
+                    if (tr != null) {
+                        playerWeapon = tr.getWeapon(player);
+                    } else {
+                        r = plugin.getRunManager().getRun(player);
+                        if (r != null) {
+                            playerWeapon = r.getWeapon();
+                        }
+                    }
+                    if (playerWeapon != null) {
+                        iceDamage = playerWeapon.getDamage() * 0.5; // 50% of weapon damage
+                    }
+                    if (iceDamage > 0) {
+                        double finalIceDamage = calculateFinalDamage(player, iceDamage, target);
+                        target.damage(finalIceDamage, player);
+                    }
                     target.addPotionEffect(new org.bukkit.potion.PotionEffect(
                         org.bukkit.potion.PotionEffectType.SLOWNESS, 100, 1, false, true)); // Slow II for 5 seconds
                     target.setFreezeTicks(100);
@@ -756,7 +816,16 @@ public class WeaponManager {
      * Create giant blast effect - damages and knocks away nearby enemies
      */
     private void createBlastEffect(Player player, LivingEntity target) {
+        // Validate inputs
+        if (player == null || !player.isOnline() || target == null || !target.isValid()) {
+            return;
+        }
+        
         org.bukkit.Location blastLoc = target.getLocation();
+        if (blastLoc == null || blastLoc.getWorld() == null) {
+            return;
+        }
+        
         double blastRadius = 5.0; // 5 block radius
         
         // Visual and audio
@@ -791,38 +860,67 @@ public class WeaponManager {
         
         // Apply damage and knockback to nearby enemies
         for (org.bukkit.entity.Entity entity : blastLoc.getWorld().getNearbyEntities(blastLoc, blastRadius, blastRadius, blastRadius)) {
-            if (entity instanceof LivingEntity) {
-                // Exclude team members
-                if (entity instanceof org.bukkit.entity.Player) {
-                    org.bukkit.entity.Player targetPlayer = (org.bukkit.entity.Player) entity;
-                    if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
-                        continue; // Skip team members
-                    }
-                }
-                
-                LivingEntity living = (LivingEntity) entity;
-                
-                // Check if it's a boss - apply additional damage reduction for blast effects
-                boolean isBoss = living.hasMetadata("roguecraft_boss") || living.hasMetadata("roguecraft_elite_boss");
-                double effectiveBaseDamage = baseDamage;
-                if (isBoss) {
-                    // Blast effects deal reduced damage to bosses (50% of normal damage)
-                    effectiveBaseDamage *= 0.5;
-                }
-                
-                double distance = entity.getLocation().distance(blastLoc);
-                double distanceMultiplier = Math.max(0.1, 1.0 - (distance / blastRadius));
-                double finalDamage = calculateFinalDamage(player, effectiveBaseDamage * distanceMultiplier, living);
-                living.damage(finalDamage, player);
-                
-                // Knockback
-                org.bukkit.util.Vector knockback = living.getLocation().toVector().subtract(blastLoc.toVector()).normalize();
-                knockback.multiply(1.5); // Knockback strength
-                knockback.setY(0.5); // Add upward component
-                living.setVelocity(knockback);
-                
-                living.getWorld().spawnParticle(Particle.EXPLOSION, living.getLocation(), 2, 0.3, 0.3, 0.3, 0.05);
+            if (!(entity instanceof LivingEntity) || !entity.isValid()) {
+                continue;
             }
+            
+            LivingEntity living = (LivingEntity) entity;
+            
+            // Exclude team members
+            if (entity instanceof org.bukkit.entity.Player) {
+                org.bukkit.entity.Player targetPlayer = (org.bukkit.entity.Player) entity;
+                if (teamMemberIds.contains(targetPlayer.getUniqueId())) {
+                    continue; // Skip team members
+                }
+            }
+            
+            // Check if it's a boss - apply additional damage reduction for blast effects
+            boolean isBoss = living.hasMetadata("roguecraft_boss") || living.hasMetadata("roguecraft_elite_boss");
+            double effectiveBaseDamage = baseDamage;
+            if (isBoss) {
+                // Blast effects deal reduced damage to bosses (50% of normal damage)
+                effectiveBaseDamage *= 0.5;
+            }
+            
+            org.bukkit.Location entityLoc = living.getLocation();
+            if (entityLoc == null || entityLoc.getWorld() == null) {
+                continue;
+            }
+            
+            double distance = entityLoc.distance(blastLoc);
+            if (!Double.isFinite(distance) || distance < 0) {
+                continue; // Skip if distance is invalid
+            }
+            
+            double distanceMultiplier = Math.max(0.1, 1.0 - (distance / blastRadius));
+            double finalDamage = calculateFinalDamage(player, effectiveBaseDamage * distanceMultiplier, living);
+            living.damage(finalDamage, player);
+            
+            // Knockback - only if distance is greater than a small epsilon
+            if (distance > 0.01) {
+                org.bukkit.util.Vector knockback = entityLoc.toVector().subtract(blastLoc.toVector());
+                double length = knockback.length();
+                
+                // Only normalize if length is valid and greater than epsilon
+                if (Double.isFinite(length) && length > 0.01) {
+                    knockback.normalize();
+                    knockback.multiply(1.5); // Knockback strength
+                    knockback.setY(0.5); // Add upward component
+                    
+                    // Validate vector components before setting velocity
+                    if (Double.isFinite(knockback.getX()) && Double.isFinite(knockback.getY()) && Double.isFinite(knockback.getZ())) {
+                        living.setVelocity(knockback);
+                    }
+                } else {
+                    // Fallback: use a simple upward knockback if vectors are too close
+                    living.setVelocity(new org.bukkit.util.Vector(0, 0.5, 0));
+                }
+            } else {
+                // Entities at same location get simple upward knockback
+                living.setVelocity(new org.bukkit.util.Vector(0, 0.5, 0));
+            }
+            
+            living.getWorld().spawnParticle(Particle.EXPLOSION, entityLoc, 2, 0.3, 0.3, 0.3, 0.05);
         }
     }
     
@@ -866,7 +964,7 @@ public class WeaponManager {
      * Get modified attack speed with Rapid Fire mod
      * Capped to prevent overpowered arrow spam
      */
-    private double getModifiedAttackSpeed(Player player, Weapon weapon) {
+    public double getModifiedAttackSpeed(Player player, Weapon weapon) {
         double baseSpeed = weapon.getAttackSpeed();
         if (hasWeaponMod(player, "Rapid Fire")) {
             double rapidFireValue = getWeaponModValue(player, "Rapid Fire");
@@ -900,60 +998,101 @@ public class WeaponManager {
         boolean isExplosive = hasWeaponMod(player, "Explosive Rounds");
         
         for (int i = 0; i < projectileCount; i++) {
-            Fireball fireball = player.getWorld().spawn(eyeLoc, Fireball.class);
-            fireball.setDirection(direction);
-            fireball.setYield(0); // No terrain damage
-            fireball.setIsIncendiary(false);
-            fireball.setShooter(player);
-            
-            // Homing effect
-            if (isHoming) {
-                BukkitTask homingTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                    if (!fireball.isValid()) return;
-                    LivingEntity nearest = findNearestEnemy(player, weapon.getRange() * 1.5);
-                    if (nearest != null && nearest.isValid()) {
-                        Vector newDir = nearest.getEyeLocation().subtract(fireball.getLocation()).toVector().normalize();
-                        fireball.setDirection(newDir);
-                        fireball.setVelocity(newDir.multiply(0.5));
-                        fireball.getWorld().spawnParticle(Particle.ENCHANT, fireball.getLocation(), 1, 0.1, 0.1, 0.1, 0);
-                    }
-                }, 0L, 2L);
-                
-                // Cancel homing after 3 seconds
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    if (homingTask != null) homingTask.cancel();
-                }, 60L);
+            // Add spread to prevent fireballs from colliding with each other
+            final Vector spreadDirection;
+            if (projectileCount > 1) {
+                // Add slight spread: 0.1 radians (~5.7 degrees) per projectile
+                double spreadAngle = (i - (projectileCount - 1) / 2.0) * 0.1;
+                // Rotate direction vector slightly
+                org.bukkit.util.Vector right = direction.clone().crossProduct(new org.bukkit.util.Vector(0, 1, 0)).normalize();
+                if (right.lengthSquared() > 0.01) {
+                    spreadDirection = direction.clone().rotateAroundAxis(right, spreadAngle);
+                } else {
+                    spreadDirection = direction.clone();
+                }
+            } else {
+                spreadDirection = direction.clone();
             }
             
-            // Schedule damage on impact
+            // Small delay between projectiles to prevent collision
             Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (fireball.isValid()) {
-                    Location loc = fireball.getLocation();
-                    double totalDamageDealt = 0.0;
-                    double aoeRadius = isExplosive ? weapon.getAreaOfEffect() * 1.5 : weapon.getAreaOfEffect();
-                    
-                    for (Entity entity : loc.getWorld().getNearbyEntities(loc, aoeRadius, aoeRadius, aoeRadius)) {
-                        if (entity instanceof LivingEntity && !(entity instanceof Player)) {
-                            LivingEntity living = (LivingEntity) entity;
-                            double finalDamage = calculateFinalDamage(player, weapon.getDamage(), living);
-                            living.damage(finalDamage, player);
-                            applyWeaponModEffects(player, living);
-                            totalDamageDealt += finalDamage;
-                        }
-                    }
-                    
-                    // Explosive Rounds visual effect
-                    if (isExplosive && totalDamageDealt > 0) {
-                        loc.getWorld().spawnParticle(Particle.EXPLOSION, loc, 5, 0.5, 0.5, 0.5, 0.1);
-                        loc.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 0.5f, 1.2f);
-                    }
-                    
-                    if (totalDamageDealt > 0) {
-                        applyLifesteal(player, totalDamageDealt);
-                    }
-                    fireball.remove();
+                if (!player.isOnline()) return;
+                Fireball fireball = player.getWorld().spawn(eyeLoc, Fireball.class);
+                fireball.setDirection(spreadDirection);
+                fireball.setYield(0); // No terrain damage
+                fireball.setIsIncendiary(false);
+                fireball.setShooter(player);
+                
+                // ProtocolLib: Start projectile trail
+                if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                    plugin.getProtocolLibIntegration().startProjectileTrail(fireball, weapon.getType());
                 }
-            }, 40L); // Remove after 2 seconds if not hit anything
+                
+                // Set initial velocity for faster projectiles (increased from default)
+                // Validate spreadDirection before using it
+                double length = spreadDirection.length();
+                if (Double.isFinite(length) && length > 0.01) {
+                    Vector velocity = spreadDirection.clone().normalize().multiply(1.2);
+                    if (Double.isFinite(velocity.getX()) && Double.isFinite(velocity.getY()) && Double.isFinite(velocity.getZ())) {
+                        fireball.setVelocity(velocity); // Faster default speed (1.2 instead of default ~0.5)
+                    }
+                }
+            
+                // Homing effect
+                if (isHoming) {
+                    BukkitTask homingTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                        if (!fireball.isValid() || !player.isOnline()) return;
+                        LivingEntity nearest = findNearestEnemy(player, weapon.getRange() * 1.5);
+                        if (nearest != null && nearest.isValid()) {
+                            Vector newDir = nearest.getEyeLocation().subtract(fireball.getLocation()).toVector();
+                            double dirLength = newDir.length();
+                            if (Double.isFinite(dirLength) && dirLength > 0.01) {
+                                newDir.normalize();
+                                if (Double.isFinite(newDir.getX()) && Double.isFinite(newDir.getY()) && Double.isFinite(newDir.getZ())) {
+                                    fireball.setDirection(newDir);
+                                    fireball.setVelocity(newDir.multiply(1.2)); // Increased from 0.5 to 1.2 for faster homing
+                                    fireball.getWorld().spawnParticle(Particle.ENCHANT, fireball.getLocation(), 1, 0.1, 0.1, 0.1, 0);
+                                }
+                            }
+                        }
+                    }, 0L, 2L);
+                    
+                    // Cancel homing after 3 seconds
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        if (homingTask != null) homingTask.cancel();
+                    }, 60L);
+                }
+                
+                // Schedule damage on impact
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    if (fireball.isValid()) {
+                        Location loc = fireball.getLocation();
+                        double totalDamageDealt = 0.0;
+                        double aoeRadius = isExplosive ? weapon.getAreaOfEffect() * 1.5 : weapon.getAreaOfEffect();
+                        
+                        for (Entity entity : loc.getWorld().getNearbyEntities(loc, aoeRadius, aoeRadius, aoeRadius)) {
+                            if (entity instanceof LivingEntity && !(entity instanceof Player)) {
+                                LivingEntity living = (LivingEntity) entity;
+                                double finalDamage = calculateFinalDamage(player, weapon.getDamage(), living);
+                                living.damage(finalDamage, player);
+                                applyWeaponModEffects(player, living);
+                                totalDamageDealt += finalDamage;
+                            }
+                        }
+                        
+                        // Explosive Rounds visual effect
+                        if (isExplosive && totalDamageDealt > 0) {
+                            loc.getWorld().spawnParticle(Particle.EXPLOSION, loc, 5, 0.5, 0.5, 0.5, 0.1);
+                            loc.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 0.5f, 1.2f);
+                        }
+                        
+                        if (totalDamageDealt > 0) {
+                            applyLifesteal(player, totalDamageDealt);
+                        }
+                        fireball.remove();
+                    }
+                }, 40L); // Remove after 2 seconds if not hit anything
+            }, i * 2L); // 2 tick delay between each projectile (0.1 seconds)
         }
         
         player.playSound(player.getLocation(), Sound.ENTITY_BLAZE_SHOOT, 0.5f, 1.0f);
@@ -985,6 +1124,11 @@ public class WeaponManager {
             arrow.setDamage(finalDamage);
             arrow.setPickupStatus(Arrow.PickupStatus.DISALLOWED);
             
+            // ProtocolLib: Start projectile trail
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                plugin.getProtocolLibIntegration().startProjectileTrail(arrow, weapon.getType());
+            }
+            
             // Piercing Shot - arrows pass through
             if (isPiercing) {
                 arrow.setPierceLevel((byte) 3); // Can hit up to 3 enemies
@@ -1001,12 +1145,18 @@ public class WeaponManager {
             // Homing effect
             if (isHoming) {
                 BukkitTask homingTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                    if (!arrow.isValid() || arrow.isDead()) return;
+                    if (!arrow.isValid() || arrow.isDead() || !player.isOnline()) return;
                     LivingEntity nearest = findNearestEnemy(player, weapon.getRange() * 1.5);
                     if (nearest != null && nearest.isValid()) {
-                        Vector newDir = nearest.getEyeLocation().subtract(arrow.getLocation()).toVector().normalize();
-                        arrow.setVelocity(newDir.multiply(2.0));
-                        arrow.getWorld().spawnParticle(Particle.ENCHANT, arrow.getLocation(), 1, 0.1, 0.1, 0.1, 0);
+                        Vector newDir = nearest.getEyeLocation().subtract(arrow.getLocation()).toVector();
+                        double dirLength = newDir.length();
+                        if (Double.isFinite(dirLength) && dirLength > 0.01) {
+                            newDir.normalize();
+                            if (Double.isFinite(newDir.getX()) && Double.isFinite(newDir.getY()) && Double.isFinite(newDir.getZ())) {
+                                arrow.setVelocity(newDir.multiply(2.0));
+                                arrow.getWorld().spawnParticle(Particle.ENCHANT, arrow.getLocation(), 1, 0.1, 0.1, 0.1, 0);
+                            }
+                        }
                     }
                 }, 0L, 2L);
                 
@@ -1031,7 +1181,14 @@ public class WeaponManager {
                     (Math.random() - 0.5) * 0.2,
                     (Math.random() - 0.5) * 0.2
                 );
-                arrow.setVelocity(direction.clone().add(spread).normalize().multiply(2.0));
+                Vector finalDir = direction.clone().add(spread);
+                double finalDirLength = finalDir.length();
+                if (Double.isFinite(finalDirLength) && finalDirLength > 0.01) {
+                    finalDir.normalize();
+                    if (Double.isFinite(finalDir.getX()) && Double.isFinite(finalDir.getY()) && Double.isFinite(finalDir.getZ())) {
+                        arrow.setVelocity(finalDir.multiply(2.0));
+                    }
+                }
             }
         }
         
@@ -1046,10 +1203,6 @@ public class WeaponManager {
         // Lightning Strike: Reduced range cap to prevent excessive range
         double effectiveRange = Math.min(weapon.getRange(), 25.0); // Cap at 25 blocks max (reduced from 40)
         
-        // Visual lightning effect
-        player.getWorld().spawnParticle(Particle.ELECTRIC_SPARK, targetLoc.clone().add(0, 1, 0), 50, 0.5, 2, 0.5, 0.1);
-        player.getWorld().playSound(targetLoc, Sound.ENTITY_LIGHTNING_BOLT_IMPACT, 0.5f, 1.0f);
-        
         // Get team members to exclude from damage
         com.eldor.roguecraft.models.TeamRun teamRun = plugin.getRunManager().getTeamRun(player);
         Set<UUID> teamMemberIds = new HashSet<>();
@@ -1062,6 +1215,15 @@ public class WeaponManager {
         double aoe = weapon.getAreaOfEffect();
         // Cap AOE to prevent it from becoming too large
         double effectiveAOE = Math.min(aoe, 8.0); // Cap AOE at 8 blocks
+        
+        // ProtocolLib: Show AOE damage indicator
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            plugin.getProtocolLibIntegration().showAOEDamageIndicator(targetLoc, effectiveAOE, weapon.getType());
+        }
+        
+        // Visual lightning effect
+        player.getWorld().spawnParticle(Particle.ELECTRIC_SPARK, targetLoc.clone().add(0, 1, 0), 50, 0.5, 2, 0.5, 0.1);
+        player.getWorld().playSound(targetLoc, Sound.ENTITY_LIGHTNING_BOLT_IMPACT, 0.5f, 1.0f);
         
         Set<LivingEntity> hitEntities = new HashSet<>();
         
@@ -1169,6 +1331,11 @@ public class WeaponManager {
             if (tnt.isValid() && !tnt.isDead()) {
                 Location explodeLoc = tnt.getLocation();
                 
+                // ProtocolLib: Show AOE damage indicator
+                if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                    plugin.getProtocolLibIntegration().showAOEDamageIndicator(explodeLoc, weapon.getAreaOfEffect(), weapon.getType());
+                }
+                
                 // Store actual explosion location for XP attribution
                 tnt.setMetadata("roguecraft_tnt_explosion_loc", new org.bukkit.metadata.FixedMetadataValue(plugin, explodeLoc.clone()));
                 
@@ -1216,11 +1383,24 @@ public class WeaponManager {
     }
     
     private void throwPotion(Player player, LivingEntity target, Weapon weapon) {
-        Vector direction = target.getEyeLocation().subtract(player.getEyeLocation()).toVector().normalize();
+        if (target == null || !target.isValid()) return;
+        Vector direction = target.getEyeLocation().subtract(player.getEyeLocation()).toVector();
+        double dirLength = direction.length();
+        if (!Double.isFinite(dirLength) || dirLength < 0.01) return;
+        direction.normalize();
+        if (!Double.isFinite(direction.getX()) || !Double.isFinite(direction.getY()) || !Double.isFinite(direction.getZ())) return;
         
         // Launch potion from player with increased velocity for better range
         ThrownPotion potion = player.launchProjectile(ThrownPotion.class);
-        potion.setVelocity(direction.multiply(1.2)); // Increased from 0.75 to 1.2 for better range
+        Vector velocity = direction.multiply(1.2);
+        if (Double.isFinite(velocity.getX()) && Double.isFinite(velocity.getY()) && Double.isFinite(velocity.getZ())) {
+            potion.setVelocity(velocity); // Increased from 0.75 to 1.2 for better range
+        }
+        
+        // ProtocolLib: Start projectile trail
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            plugin.getProtocolLibIntegration().startProjectileTrail(potion, weapon.getType());
+        }
         
         // Mark this potion as a weapon potion with player and weapon info
         // We'll handle damage/effects in the PotionSplashEvent listener
@@ -1239,13 +1419,26 @@ public class WeaponManager {
     }
     
     private void launchIceShard(Player player, LivingEntity target, Weapon weapon) {
+        if (target == null || !target.isValid()) return;
         Location eyeLoc = player.getEyeLocation();
-        Vector direction = target.getEyeLocation().subtract(eyeLoc).toVector().normalize();
+        Vector direction = target.getEyeLocation().subtract(eyeLoc).toVector();
+        double dirLength = direction.length();
+        if (!Double.isFinite(dirLength) || dirLength < 0.01) return;
+        direction.normalize();
+        if (!Double.isFinite(direction.getX()) || !Double.isFinite(direction.getY()) || !Double.isFinite(direction.getZ())) return;
         
         // Use snowball as projectile
         Snowball snowball = player.getWorld().spawn(eyeLoc, Snowball.class);
-        snowball.setVelocity(direction.multiply(2.0));
+        Vector velocity = direction.multiply(2.0);
+        if (Double.isFinite(velocity.getX()) && Double.isFinite(velocity.getY()) && Double.isFinite(velocity.getZ())) {
+            snowball.setVelocity(velocity);
+        }
         snowball.setShooter(player);
+        
+        // ProtocolLib: Start projectile trail (replaces the manual particle task)
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            plugin.getProtocolLibIntegration().startProjectileTrail(snowball, weapon.getType());
+        }
         
         // Mark this snowball as an ice shard weapon so we can handle damage on hit
         snowball.setMetadata("ice_shard_weapon", new org.bukkit.metadata.FixedMetadataValue(plugin, player.getUniqueId().toString()));
@@ -1274,7 +1467,11 @@ public class WeaponManager {
                 for (Entity entity : loc.getWorld().getNearbyEntities(loc, weaponAoe, weaponAoe, weaponAoe)) {
                     if (entity instanceof LivingEntity && !(entity instanceof Player) && entity != player) {
                         LivingEntity living = (LivingEntity) entity;
-                        double finalDamage = calculateFinalDamage(player, weaponDamage, living);
+                        // Apply full damage at center, with reduced falloff (minimum 50% damage)
+                        double distance = entity.getLocation().distance(loc);
+                        double distanceMultiplier = Math.max(0.5, 1.0 - (distance / (weaponAoe * 2.0)));
+                        double baseDamage = weaponDamage * distanceMultiplier;
+                        double finalDamage = calculateFinalDamage(player, baseDamage, living);
                         living.damage(finalDamage, player);
                         applyWeaponModEffects(player, living);
                         totalDamageDealt += finalDamage;
@@ -1296,6 +1493,9 @@ public class WeaponManager {
         Location eyeLoc = player.getEyeLocation();
         Vector direction = target.getEyeLocation().subtract(eyeLoc).toVector().normalize();
         
+        // Increased AOE for magic missile (from 0.5 to 2.0)
+        double missileAOE = Math.max(2.0, weapon.getAreaOfEffect());
+        
         for (int i = 0; i < weapon.getProjectileCount(); i++) {
             // Use small fireball for magic missile
             SmallFireball missile = player.getWorld().spawn(eyeLoc, SmallFireball.class);
@@ -1304,38 +1504,116 @@ public class WeaponManager {
             missile.setIsIncendiary(false);
             missile.setShooter(player);
             
+            // ProtocolLib: Start projectile trail
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                plugin.getProtocolLibIntegration().startProjectileTrail(missile, weapon.getType());
+            }
+            
+            // Store metadata for hit detection
+            missile.setMetadata("magic_missile_weapon", new org.bukkit.metadata.FixedMetadataValue(plugin, player.getUniqueId().toString()));
+            missile.setMetadata("magic_missile_damage", new org.bukkit.metadata.FixedMetadataValue(plugin, weapon.getDamage()));
+            missile.setMetadata("magic_missile_aoe", new org.bukkit.metadata.FixedMetadataValue(plugin, missileAOE));
+            
             // Homing effect - update direction periodically
             BukkitTask homingTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                if (!missile.isValid() || !target.isValid()) {
+                if (!missile.isValid()) {
                     return;
                 }
                 
-                Vector newDirection = target.getEyeLocation().subtract(missile.getLocation()).toVector().normalize();
-                missile.setDirection(newDirection);
-                missile.setVelocity(newDirection.multiply(0.5));
+                // Find nearest enemy for homing
+                LivingEntity nearestTarget = target;
+                if (!target.isValid() || target.isDead()) {
+                    nearestTarget = findNearestEnemy(player, weapon.getRange() * 1.5);
+                }
                 
-                // Particle trail
-                missile.getWorld().spawnParticle(Particle.ENCHANT, missile.getLocation(), 2, 0.1, 0.1, 0.1, 0);
-            }, 0L, 2L);
+                if (nearestTarget != null && nearestTarget.isValid() && !nearestTarget.isDead()) {
+                    Vector newDirection = nearestTarget.getEyeLocation().subtract(missile.getLocation()).toVector();
+                    double dirLength = newDirection.length();
+                    if (Double.isFinite(dirLength) && dirLength > 0.01) {
+                        newDirection.normalize();
+                        if (Double.isFinite(newDirection.getX()) && Double.isFinite(newDirection.getY()) && Double.isFinite(newDirection.getZ())) {
+                            missile.setDirection(newDirection);
+                            missile.setVelocity(newDirection.multiply(1.0)); // Increased speed from 0.5 to 1.0
+                        }
+                    }
+                }
+                
+                // Particle trail (reduced from 3 to 1 particle, every 3 ticks instead of every tick)
+                if (missile.getTicksLived() % 3 == 0) {
+                    missile.getWorld().spawnParticle(Particle.ENCHANT, missile.getLocation(), 1, 0.1, 0.1, 0.1, 0);
+                }
+            }, 0L, 1L); // Update every tick for better homing
             
+            // Check for hits every tick (more responsive than waiting 3 seconds)
+            final BukkitTask[] hitCheckTaskRef = new BukkitTask[1];
+            BukkitTask hitCheckTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                if (!missile.isValid() || !missile.hasMetadata("magic_missile_weapon")) {
+                    return;
+                }
+                
+                Location loc = missile.getLocation();
+                double missileAOEValue = missile.getMetadata("magic_missile_aoe").get(0).asDouble();
+                double missileDamage = missile.getMetadata("magic_missile_damage").get(0).asDouble();
+                
+                // Check for nearby enemies
+                for (Entity entity : loc.getWorld().getNearbyEntities(loc, missileAOEValue, missileAOEValue, missileAOEValue)) {
+                    if (entity instanceof LivingEntity && !(entity instanceof Player) && entity != player) {
+                        LivingEntity living = (LivingEntity) entity;
+                        
+                        // Hit detected - deal damage immediately
+                        double finalDamage = calculateFinalDamage(player, missileDamage, living);
+                        living.damage(finalDamage, player);
+                        applyWeaponModEffects(player, living);
+                        
+                        // Visual effect on hit (reduced from 20 to 5 particles)
+                        loc.getWorld().spawnParticle(Particle.ENCHANT, loc, 5, 0.5, 0.5, 0.5, 0);
+                        loc.getWorld().playSound(loc, Sound.ENTITY_EVOKER_CAST_SPELL, 0.7f, 1.5f);
+                        
+                        // Remove missile after hit
+                        homingTask.cancel();
+                        if (hitCheckTaskRef[0] != null) {
+                            hitCheckTaskRef[0].cancel();
+                        }
+                        missile.removeMetadata("magic_missile_weapon", plugin);
+                        missile.removeMetadata("magic_missile_damage", plugin);
+                        missile.removeMetadata("magic_missile_aoe", plugin);
+                        missile.remove();
+                        return;
+                    }
+                }
+            }, 1L, 1L); // Check every tick
+            hitCheckTaskRef[0] = hitCheckTask;
+            
+            // Fallback: remove missile after 3 seconds if it didn't hit anything
             Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 homingTask.cancel();
-                if (missile.isValid()) {
+                if (hitCheckTaskRef[0] != null) {
+                    hitCheckTaskRef[0].cancel();
+                }
+                if (missile.isValid() && missile.hasMetadata("magic_missile_weapon")) {
                     Location loc = missile.getLocation();
                     loc.getWorld().spawnParticle(Particle.ENCHANT, loc, 20, 0.5, 0.5, 0.5, 0);
                     
+                    // Apply damage at final location as fallback
+                    double missileAOEValue = missile.getMetadata("magic_missile_aoe").get(0).asDouble();
+                    double missileDamage = missile.getMetadata("magic_missile_damage").get(0).asDouble();
                     double totalDamageDealt = 0.0;
-                    for (Entity entity : loc.getWorld().getNearbyEntities(loc, weapon.getAreaOfEffect(), weapon.getAreaOfEffect(), weapon.getAreaOfEffect())) {
+                    
+                    for (Entity entity : loc.getWorld().getNearbyEntities(loc, missileAOEValue, missileAOEValue, missileAOEValue)) {
                         if (entity instanceof LivingEntity && !(entity instanceof Player)) {
                             LivingEntity living = (LivingEntity) entity;
-                            double finalDamage = calculateFinalDamage(player, weapon.getDamage(), living);
+                            double finalDamage = calculateFinalDamage(player, missileDamage, living);
                             living.damage(finalDamage, player);
+                            applyWeaponModEffects(player, living);
                             totalDamageDealt += finalDamage;
                         }
                     }
                     if (totalDamageDealt > 0) {
                         applyLifesteal(player, totalDamageDealt);
                     }
+                    missile.removeMetadata("magic_missile_weapon", plugin);
+                    missile.removeMetadata("magic_missile_damage", plugin);
+                    missile.removeMetadata("magic_missile_aoe", plugin);
                     missile.remove();
                 }
             }, 60L);

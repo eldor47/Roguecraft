@@ -119,19 +119,21 @@ public class ShrineListener implements Listener {
         // Check if player is in a run
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player.getUniqueId());
         Run run = null;
-        boolean inRun = false;
+        boolean inActiveRun = false;
         
         if (teamRun != null && teamRun.isActive()) {
-            inRun = true;
+            inActiveRun = true;
         } else {
             run = plugin.getRunManager().getRun(player.getUniqueId());
             if (run != null && run.isActive()) {
-                inRun = true;
+                inActiveRun = true;
             }
         }
         
-        if (!inRun) {
-            return;
+        // Only handle shrine interaction if player has an ACTIVE run
+        // If run is not active or doesn't exist, allow normal interaction
+        if (!inActiveRun) {
+            return; // Not in an active run, allow normal interaction
         }
         
         // Get team ID

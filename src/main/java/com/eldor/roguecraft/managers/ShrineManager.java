@@ -1187,7 +1187,7 @@ public class ShrineManager {
                 run.addPowerUp(powerUp);
             }
             
-            // Apply stat immediately if it's health or speed
+            // Apply stat immediately if it's health, speed, or armor
             if (statName.equals("health")) {
                 double health = teamRun != null ? teamRun.getStat(player, "health") : run.getStat("health");
                 org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
@@ -1204,6 +1204,13 @@ public class ShrineManager {
                 org.bukkit.attribute.AttributeInstance speedInstance = player.getAttribute(speedAttr);
                 if (speedInstance != null) {
                     speedInstance.setBaseValue(newSpeed);
+                }
+            } else if (statName.equals("armor")) {
+                double armor = teamRun != null ? teamRun.getStat(player, "armor") : run.getStat("armor");
+                org.bukkit.attribute.Attribute armorAttr = org.bukkit.attribute.Attribute.GENERIC_ARMOR;
+                org.bukkit.attribute.AttributeInstance armorInstance = player.getAttribute(armorAttr);
+                if (armorInstance != null) {
+                    armorInstance.setBaseValue(armor);
                 }
             }
             

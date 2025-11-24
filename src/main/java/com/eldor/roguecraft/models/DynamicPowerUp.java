@@ -135,15 +135,30 @@ public class DynamicPowerUp {
     
     /**
      * Generate a weapon mod power-up
+     * @param excludedMods Set of weapon mod names to exclude (mods the player already has)
      */
-    public static PowerUp generateWeaponMod(int playerLevel, double luck) {
+    public static PowerUp generateWeaponMod(int playerLevel, double luck, java.util.Set<String> excludedMods) {
         PowerUp.Rarity rarity = determineRarity(luck);
         
-        String[] mods = {
+        String[] allMods = {
             "Piercing Shot", "Explosive Rounds", "Chain Lightning", "Frost Nova",
             "Rapid Fire", "Homing Projectiles", "Multi-Shot", "Burn Effect"
         };
-        String modName = mods[RANDOM.nextInt(mods.length)];
+        
+        // Filter out excluded mods
+        java.util.List<String> availableMods = new java.util.ArrayList<>();
+        for (String mod : allMods) {
+            if (excludedMods == null || !excludedMods.contains(mod)) {
+                availableMods.add(mod);
+            }
+        }
+        
+        // If all mods are excluded, return null (will fall back to stat boost)
+        if (availableMods.isEmpty()) {
+            return null;
+        }
+        
+        String modName = availableMods.get(RANDOM.nextInt(availableMods.size()));
         
         double value = 1.0 + (playerLevel * 0.1) * getRarityMultiplier(rarity) * luck;
         
@@ -157,6 +172,13 @@ public class DynamicPowerUp {
             value,
             new String[0]
         );
+    }
+    
+    /**
+     * Overload for backward compatibility
+     */
+    public static PowerUp generateWeaponMod(int playerLevel, double luck) {
+        return generateWeaponMod(playerLevel, luck, null);
     }
     
     /**
@@ -258,6 +280,66 @@ public class DynamicPowerUp {
     }
     
     /**
+     * Generate a summon power-up (temporary ally that fights enemies)
+     */
+    public static PowerUp generateSummon(int playerLevel, double luck) {
+        PowerUp.Rarity rarity = determineRarity(luck);
+        
+        String[] summons = {
+            "Explosive Chicken", "Explosive Slime", "Creeper Companion", "Poisonous Squid"
+        };
+        String summonName = summons[RANDOM.nextInt(summons.length)];
+        
+        // Value represents duration in seconds (90-120 seconds, or 1.5-2 minutes)
+        double baseDuration = 90.0 + (playerLevel * 0.5); // Scales slightly with level
+        double duration = Math.min(120.0, baseDuration * getRarityMultiplier(rarity) * (0.9 + luck * 0.2));
+        
+        String description = getSummonDescription(summonName, duration);
+        Material icon = getIconForSummon(summonName);
+        
+        return new PowerUp(
+            "dynamic_summon_" + RANDOM.nextInt(10000),
+            summonName,
+            description,
+            rarity,
+            PowerUp.PowerUpType.SUMMON,
+            icon,
+            duration,
+            new String[0]
+        );
+    }
+    
+    private static String getSummonDescription(String summonName, double duration) {
+        switch (summonName) {
+            case "Explosive Chicken":
+                return "Summons a chicken that explodes on death! Lasts " + String.format("%.0f", duration) + " seconds or until death.";
+            case "Explosive Slime":
+                return "Summons a slime that explodes with AOE crit damage! Lasts " + String.format("%.0f", duration) + " seconds or until death.";
+            case "Creeper Companion":
+                return "Summons a friendly creeper that explodes on enemies! Lasts " + String.format("%.0f", duration) + " seconds or until death.";
+            case "Poisonous Squid":
+                return "Summons a glowing squid that poisons nearby enemies! Lasts " + String.format("%.0f", duration) + " seconds or until death.";
+            default:
+                return "Summons an ally! Lasts " + String.format("%.0f", duration) + " seconds or until death.";
+        }
+    }
+    
+    private static Material getIconForSummon(String summonName) {
+        switch (summonName) {
+            case "Explosive Chicken":
+                return Material.CHICKEN_SPAWN_EGG;
+            case "Explosive Slime":
+                return Material.SLIME_SPAWN_EGG;
+            case "Creeper Companion":
+                return Material.CREEPER_SPAWN_EGG;
+            case "Poisonous Squid":
+                return Material.GLOW_INK_SAC;
+            default:
+                return Material.ARMOR_STAND;
+        }
+    }
+    
+    /**
      * Generate a shrine power-up (temporary powerful buffs)
      */
     public static PowerUp generateShrine(int playerLevel, double luck) {
@@ -295,7 +377,7 @@ public class DynamicPowerUp {
         
         String[] synergies = {
             "Critical Mass", "Elemental Fusion", "Rapid Escalation", "Chain Reaction",
-            "Berserker Mode", "Glass Cannon", "Immortal Build", "Lucky Streak"
+            "Berserker Mode", "Glass Cannon", "Lucky Streak"
         };
         String synergyName = synergies[RANDOM.nextInt(synergies.length)];
         
@@ -379,18 +461,15 @@ public class DynamicPowerUp {
             case "Elemental Fusion":
                 return "Weapon effects stack and multiply by " + String.format("%.1fx", value);
             case "Rapid Escalation":
-                return "Gain " + String.format("%.1f%%", value * 2) + " damage per kill (stacks, max +200% bonus)";
+                return "Gain " + String.format("%.1f%%", value * 0.5) + " damage per kill (stacks, max +50% bonus)";
             case "Chain Reaction":
-                return "Kills have " + String.format("%.0f%%", value * 20) + " chance to trigger free attack";
+                return "Kills have " + String.format("%.0f%%", value * 10) + " chance to trigger free attack (max 40%)";
             case "Berserker Mode":
                 return "Gain " + String.format("%.0f%%", value * 30) + " damage when below 30% HP";
             case "Glass Cannon":
                 return "+" + String.format("%.0f%%", value * 100) + " damage, -50% max HP";
-            case "Immortal Build":
-                return "Cannot die for " + String.format("%.1f", value) + " seconds after fatal damage (30s cooldown)";
             case "Lucky Streak":
-                int killsNeeded = (int) Math.max(5, 20 / value);
-                return "Every " + killsNeeded + " kills grants random power-up effect";
+                return "Every 20 kills grants random power-up effect";
             default:
                 return "Powerful combo effect (x" + String.format("%.1f", value) + ")";
         }

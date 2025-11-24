@@ -13,22 +13,20 @@ import org.bukkit.entity.*;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.metadata.FixedMetadataValue;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 
 public class SynergyManager implements Listener {
     private final RoguecraftPlugin plugin;
     private final Map<UUID, Integer> killCounts; // Track kills per run for Rapid Escalation and Lucky Streak
-    private final Map<UUID, Long> lastImmortalUse; // Track Immortal Build cooldown
+    private final Map<UUID, Map<UUID, Integer>> playerKillCounts; // Track kills per player in team runs
     
     public SynergyManager(RoguecraftPlugin plugin) {
         this.plugin = plugin;
         this.killCounts = new HashMap<>();
-        this.lastImmortalUse = new HashMap<>();
+        this.playerKillCounts = new HashMap<>();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
     }
     
@@ -47,7 +45,36 @@ public class SynergyManager implements Listener {
      */
     public void stopSynergies(UUID runId) {
         killCounts.remove(runId);
-        lastImmortalUse.remove(runId);
+        playerKillCounts.remove(runId);
+    }
+    
+    /**
+     * Get kill count for a run
+     */
+    public int getKillCount(UUID runId) {
+        return killCounts.getOrDefault(runId, 0);
+    }
+    
+    /**
+     * Get kill count for a specific player in a team run
+     */
+    public int getPlayerKillCount(UUID runId, UUID playerId) {
+        Map<UUID, Integer> playerKills = playerKillCounts.get(runId);
+        if (playerKills == null) {
+            return 0;
+        }
+        return playerKills.getOrDefault(playerId, 0);
+    }
+    
+    /**
+     * Get all player kill counts for a team run
+     */
+    public Map<UUID, Integer> getPlayerKillCounts(UUID runId) {
+        Map<UUID, Integer> playerKills = playerKillCounts.get(runId);
+        if (playerKills == null) {
+            return new HashMap<>();
+        }
+        return new HashMap<>(playerKills);
     }
     
     /**
@@ -87,26 +114,29 @@ public class SynergyManager implements Listener {
         int kills = killCounts.getOrDefault(runId, 0) + 1;
         killCounts.put(runId, kills);
         
-        // Check for synergies
-        List<PowerUp> synergies = getActiveSynergies(run);
+        // Track per-player kills for team runs
+        if (run instanceof TeamRun) {
+            Map<UUID, Integer> playerKills = playerKillCounts.computeIfAbsent(runId, k -> new HashMap<>());
+            playerKills.put(killer.getUniqueId(), playerKills.getOrDefault(killer.getUniqueId(), 0) + 1);
+        }
         
-        for (PowerUp synergy : synergies) {
-            String synergyName = synergy.getName();
-            double value = synergy.getValue();
-            
-            switch (synergyName) {
-                case "Rapid Escalation":
-                    applyRapidEscalation(run, value);
-                    break;
-                case "Chain Reaction":
-                    if (shouldTriggerChainReaction(value)) {
-                        triggerChainReaction(killer, entity.getLocation());
-                    }
-                    break;
-                case "Lucky Streak":
-                    checkLuckyStreak(run, kills, value);
-                    break;
-            }
+        // Check for synergies - use killer-specific synergies for TeamRun to avoid duplicates
+        // Rapid Escalation: Only check once per kill
+        PowerUp rapidEscalation = getSynergyByName(run, killer, "Rapid Escalation");
+        if (rapidEscalation != null) {
+            applyRapidEscalation(run, rapidEscalation.getValue());
+        }
+        
+        // Chain Reaction: Only check killer's synergy, nerfed chance
+        PowerUp chainReaction = getSynergyByName(run, killer, "Chain Reaction");
+        if (chainReaction != null && shouldTriggerChainReaction(chainReaction.getValue())) {
+            triggerChainReaction(killer, entity.getLocation());
+        }
+        
+        // Lucky Streak: Only trigger once per kill milestone, using killer's synergy
+        PowerUp luckyStreak = getSynergyByName(run, killer, "Lucky Streak");
+        if (luckyStreak != null) {
+            checkLuckyStreak(run, kills, luckyStreak.getValue());
         }
     }
     
@@ -202,23 +232,23 @@ public class SynergyManager implements Listener {
         if (rapidEscalation != null) {
             UUID runId = getRunId(run);
             int kills = killCounts.getOrDefault(runId, 0);
-            // Reduced from 5% to 2% per value point per kill, with diminishing returns
-            double damagePerKill = rapidEscalation.getValue() * 2.0; // 2% per value point per kill (reduced from 5%)
+            // Significantly reduced: 0.5% per value point per kill (reduced from 2%)
+            double damagePerKill = rapidEscalation.getValue() * 0.5; // 0.5% per value point per kill
             
-            // Apply diminishing returns: first 20 kills at full value, then 50% effectiveness
+            // Apply diminishing returns: first 10 kills at full value, then 25% effectiveness
             double effectiveKills;
-            if (kills <= 20) {
+            if (kills <= 10) {
                 effectiveKills = kills;
             } else {
-                // After 20 kills: 20 full kills + (remaining kills * 0.5)
-                effectiveKills = 20 + ((kills - 20) * 0.5);
+                // After 10 kills: 10 full kills + (remaining kills * 0.25)
+                effectiveKills = 10 + ((kills - 10) * 0.25);
             }
             
             double bonusDamage = (effectiveKills * damagePerKill) / 100.0;
             
-            // Cap total bonus at 3x damage (2x multiplier = +100% = 200% total damage)
-            // This means max Rapid Escalation bonus is +200% damage = 3x total
-            multiplier += Math.min(bonusDamage, 2.0);
+            // Cap total bonus at +50% damage (1.5x multiplier) - significantly reduced from +200%
+            // This means max Rapid Escalation bonus is +50% damage = 1.5x total
+            multiplier += Math.min(bonusDamage, 0.5);
         }
         
         // Berserker Mode - damage when below 30% HP
@@ -247,115 +277,20 @@ public class SynergyManager implements Listener {
         return multiplier;
     }
     
-    /**
-     * Handle Immortal Build - prevent death
-     */
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onEntityDamage(EntityDamageEvent event) {
-        if (!(event.getEntity() instanceof Player)) return;
-        
-        Player player = (Player) event.getEntity();
-        Object run = plugin.getRunManager().getTeamRun(player);
-        if (run == null) {
-            run = plugin.getRunManager().getRun(player);
-        }
-        if (run == null || !isRunActive(run)) return;
-        
-        PowerUp immortal = getSynergyByName(run, "Immortal Build");
-        if (immortal != null) {
-            UUID runId = getRunId(run);
-            
-            // Check cooldown (30 seconds)
-            long now = System.currentTimeMillis();
-            long lastUse = lastImmortalUse.getOrDefault(runId, 0L);
-            if (now - lastUse < 30000) {
-                return; // On cooldown
-            }
-            
-            // Check if this would kill the player
-            double finalDamage = event.getFinalDamage();
-            double currentHealth = player.getHealth();
-            
-            if (currentHealth - finalDamage <= 0) {
-                // Prevent death
-                event.setCancelled(true);
-                
-                // Set health to 1 HP
-                player.setHealth(1.0);
-                
-                // Grant invulnerability period
-                double invulnSeconds = immortal.getValue();
-                long invulnTicks = (long) (invulnSeconds * 20);
-                
-                player.setMetadata("immortal_invuln", new FixedMetadataValue(plugin, System.currentTimeMillis() + (invulnSeconds * 1000)));
-                
-                // Cancel damage for invulnerability period
-                BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-                    if (!player.isOnline() || player.isDead()) {
-                        return;
-                    }
-                    
-                    if (player.hasMetadata("immortal_invuln")) {
-                        long endTime = player.getMetadata("immortal_invuln").get(0).asLong();
-                        if (System.currentTimeMillis() > endTime) {
-                            player.removeMetadata("immortal_invuln", plugin);
-                            return;
-                        }
-                    } else {
-                        return;
-                    }
-                }, 0L, 1L);
-                
-                // Auto-cancel after invulnerability period
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    task.cancel();
-                    if (player.hasMetadata("immortal_invuln")) {
-                        player.removeMetadata("immortal_invuln", plugin);
-                    }
-                }, invulnTicks);
-                
-                // Visual feedback
-                player.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, player.getLocation(), 30, 0.5, 1.0, 0.5, 0.2);
-                player.playSound(player.getLocation(), Sound.ITEM_TOTEM_USE, 1.0f, 1.0f);
-                player.sendMessage("§6§lIMMORTAL BUILD! §eYou cannot die for " + String.format("%.1f", invulnSeconds) + " seconds!");
-                
-                // Update cooldown
-                lastImmortalUse.put(runId, now);
-            }
-        }
-    }
-    
-    /**
-     * Check if player is invulnerable from Immortal Build
-     */
-    public boolean isInvulnerable(Player player) {
-        if (!player.hasMetadata("immortal_invuln")) {
-            return false;
-        }
-        
-        long endTime = player.getMetadata("immortal_invuln").get(0).asLong();
-        if (System.currentTimeMillis() > endTime) {
-            player.removeMetadata("immortal_invuln", plugin);
-            return false;
-        }
-        
-        return true;
-    }
-    
     private void applyRapidEscalation(Object run, double value) {
         // Damage multiplier is applied in getDamageMultiplier()
         // This is just a placeholder for any additional effects
     }
     
     private boolean shouldTriggerChainReaction(double value) {
-        double chance = value * 20.0; // 20% per value point
-        chance = Math.min(75.0, chance); // Cap at 75%
+        double chance = value * 10.0; // 10% per value point (nerfed from 20%)
+        chance = Math.min(40.0, chance); // Cap at 40% (nerfed from 75%)
         return Math.random() * 100.0 < chance;
     }
     
     private void triggerChainReaction(Player player, Location location) {
         // Find nearest enemy and trigger a free weapon attack
-        double radius = 20.0;
+        double radius = 15.0; // Reduced from 20.0
         LivingEntity nearest = null;
         double nearestDist = Double.MAX_VALUE;
         
@@ -395,12 +330,8 @@ public class SynergyManager implements Listener {
     }
     
     private void checkLuckyStreak(Object run, int kills, double value) {
-        // Base kills needed is 20, reduced by value (higher value = fewer kills needed)
-        // Value typically ranges from 1.0 to 3.0+, so:
-        // value 1.0 = 20 kills needed
-        // value 2.0 = 10 kills needed  
-        // value 3.0 = ~7 kills needed
-        int killsNeeded = (int) Math.max(5, 20 / value); // Minimum 5 kills, base 20 kills
+        // Always require 20 kills (no scaling with value)
+        int killsNeeded = 20;
         
         if (kills % killsNeeded == 0) {
             // Grant random power-up effect
@@ -412,7 +343,7 @@ public class SynergyManager implements Listener {
     }
     
     private void grantRandomPowerUpEffect(Player player, Object run) {
-        // Random stat boost (small temporary boost)
+        // Grant only ONE random stat boost per trigger
         String[] stats = {"damage", "speed", "crit_chance", "crit_damage", "armor"};
         String randomStat = stats[new Random().nextInt(stats.length)];
         double boost = 0.1 + (Math.random() * 0.2); // 10-30% boost
@@ -456,12 +387,13 @@ public class SynergyManager implements Listener {
         return false;
     }
     
-    private List<PowerUp> getActiveSynergies(Object run) {
+    private List<PowerUp> getActiveSynergies(Object run, Player player) {
         List<PowerUp> synergies = new ArrayList<>();
         
         if (run instanceof TeamRun) {
             TeamRun teamRun = (TeamRun) run;
-            for (PowerUp powerUp : teamRun.getCollectedPowerUps()) {
+            // Use player-specific power-ups to avoid duplicates
+            for (PowerUp powerUp : teamRun.getCollectedPowerUps(player)) {
                 if (powerUp.getType() == PowerUp.PowerUpType.SYNERGY) {
                     synergies.add(powerUp);
                 }
@@ -478,6 +410,42 @@ public class SynergyManager implements Listener {
         return synergies;
     }
     
+    // Legacy method for backwards compatibility (used by other methods)
+    private List<PowerUp> getActiveSynergies(Object run) {
+        List<PowerUp> synergies = new ArrayList<>();
+        
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            // For TeamRun, get synergies from all players (used for Chain Reaction summing)
+            for (Player player : teamRun.getPlayers()) {
+                for (PowerUp powerUp : teamRun.getCollectedPowerUps(player)) {
+                    if (powerUp.getType() == PowerUp.PowerUpType.SYNERGY) {
+                        synergies.add(powerUp);
+                    }
+                }
+            }
+        } else if (run instanceof Run) {
+            Run singleRun = (Run) run;
+            for (PowerUp powerUp : singleRun.getCollectedPowerUps()) {
+                if (powerUp.getType() == PowerUp.PowerUpType.SYNERGY) {
+                    synergies.add(powerUp);
+                }
+            }
+        }
+        
+        return synergies;
+    }
+    
+    private PowerUp getSynergyByName(Object run, Player player, String name) {
+        for (PowerUp synergy : getActiveSynergies(run, player)) {
+            if (synergy.getName().equals(name)) {
+                return synergy;
+            }
+        }
+        return null;
+    }
+    
+    // Legacy method for backwards compatibility
     private PowerUp getSynergyByName(Object run, String name) {
         for (PowerUp synergy : getActiveSynergies(run)) {
             if (synergy.getName().equals(name)) {
@@ -504,7 +472,7 @@ public class SynergyManager implements Listener {
      */
     public void cleanup() {
         killCounts.clear();
-        lastImmortalUse.clear();
+        playerKillCounts.clear();
     }
 }
 

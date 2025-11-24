@@ -136,6 +136,10 @@ public class Run {
     public void addGachaItem(com.eldor.roguecraft.models.GachaItem item) {
         this.collectedGachaItems.add(item);
     }
+    
+    public void removeGachaItem(String itemId) {
+        this.collectedGachaItems.removeIf(item -> item.getId().equals(itemId));
+    }
 
     public Map<String, Double> getStats() {
         return new HashMap<>(stats);

@@ -4,6 +4,7 @@ import com.eldor.roguecraft.RoguecraftPlugin;
 import com.eldor.roguecraft.models.GachaItem;
 import com.eldor.roguecraft.models.Run;
 import com.eldor.roguecraft.models.TeamRun;
+import com.eldor.roguecraft.models.Weapon;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -292,10 +293,14 @@ public class GachaRollGUI implements Listener {
                 teamRun.setPlayerInGUI(player.getUniqueId(), false);
                 
                 // Only restart ALL players' weapon auto-attacks if NO other players are in GUI
-                if (!teamRun.hasAnyPlayerInGUI() && teamRun.getWeapon() != null) {
+                if (!teamRun.hasAnyPlayerInGUI()) {
                     for (Player teamPlayer : teamRun.getPlayers()) {
                         if (teamPlayer != null && teamPlayer.isOnline()) {
-                            plugin.getWeaponManager().startAutoAttack(teamPlayer, teamRun.getWeapon());
+                            // Get each player's individual weapon (not the legacy shared weapon)
+                            Weapon playerWeapon = teamRun.getWeapon(teamPlayer);
+                            if (playerWeapon != null) {
+                                plugin.getWeaponManager().startAutoAttack(teamPlayer, playerWeapon);
+                            }
                         }
                     }
                 }

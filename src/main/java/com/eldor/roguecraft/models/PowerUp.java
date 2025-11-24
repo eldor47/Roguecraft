@@ -69,7 +69,8 @@ public class PowerUp {
         WEAPON_UPGRADE,
         AURA,
         SHRINE,
-        SYNERGY
+        SYNERGY,
+        SUMMON
     }
 }
 

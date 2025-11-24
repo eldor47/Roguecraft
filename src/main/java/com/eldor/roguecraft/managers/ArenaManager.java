@@ -130,4 +130,52 @@ public class ArenaManager {
         defaultArena = null;
         loadArenas();
     }
+    
+    /**
+     * Save an arena's configuration to config.yml
+     */
+    public void saveArena(Arena arena) {
+        if (arena == null) return;
+        
+        ConfigurationSection arenasSection = plugin.getConfigManager().getMainConfig().getConfigurationSection("arenas");
+        if (arenasSection == null) {
+            arenasSection = plugin.getConfigManager().getMainConfig().createSection("arenas");
+        }
+        
+        ConfigurationSection arenaSection = arenasSection.getConfigurationSection(arena.getId());
+        if (arenaSection == null) {
+            arenaSection = arenasSection.createSection(arena.getId());
+        }
+        
+        // Save arena name
+        arenaSection.set("name", arena.getName());
+        
+        // Save spawn point
+        if (arena.getSpawnPoint() != null) {
+            arenaSection.set("spawn", formatLocation(arena.getSpawnPoint()));
+        }
+        
+        // Save center and radius
+        if (arena.getCenter() != null) {
+            arenaSection.set("center", formatLocation(arena.getCenter()));
+            arenaSection.set("radius", arena.getRadius());
+        }
+        
+        // Save default flag
+        arenaSection.set("default", (defaultArena != null && defaultArena.getId().equals(arena.getId())));
+        
+        // Save to file
+        plugin.saveConfig();
+    }
+    
+    /**
+     * Format a location as a string for config
+     */
+    private String formatLocation(Location loc) {
+        if (loc == null) return null;
+        return loc.getWorld().getName() + "," + 
+               loc.getX() + "," + loc.getY() + "," + loc.getZ() + "," +
+               loc.getYaw() + "," + loc.getPitch();
+    }
+    
 }

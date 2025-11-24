@@ -71,6 +71,22 @@ drops:
     enabled: true
     base-chance: 0.02  # 2% base chance (scales with drop_rate stat)
 
+# Database Settings
+database:
+  # Enable SQLite database storage for run tracking and leaderboards
+  enabled: true
+  # Auto-save runs when they end
+  auto-save: true
+
+# Economy Settings (requires Vault)
+economy:
+  # Charge players to start a run (0 = free)
+  start-cost: 0.0
+  # Reward players when they complete a run (0 = no reward)
+  completion-reward: 0.0
+  # Reward multiplier based on wave reached (0 = disabled)
+  wave-bonus-multiplier: 0.0
+
 # Messages
 messages:
   run-start: "&aEntering the Arena Realm..."

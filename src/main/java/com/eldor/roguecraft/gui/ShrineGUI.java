@@ -327,6 +327,7 @@ public class ShrineGUI implements Listener {
             plugin.getGuiManager().onGUIClosed(player);
             
             // Apply the buff and start cooldown (with variant info)
+            // Note: Message is sent by applyPowerUpFromShrine(), so we don't send it here to avoid duplicates
             plugin.getShrineManager().applyShrineBuffAndStartCooldown(player, shrine, shrine.getType(), selectedBuff);
             
             // Restart weapon auto-attack
@@ -336,8 +337,6 @@ public class ShrineGUI implements Listener {
                     plugin.getWeaponManager().startAutoAttack(player, playerWeapon);
                 }
             }
-            
-            player.sendMessage(ChatColor.GREEN + "✦ " + selectedBuff.name + " activated!");
         }
     }
     

@@ -18,9 +18,12 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class PowerUpGUI implements Listener {
     private final RoguecraftPlugin plugin;
@@ -37,7 +40,7 @@ public class PowerUpGUI implements Listener {
         this.run = run;
         this.teamRun = null;
         // Use dynamic power-up generation with luck scaling
-        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(run.getLevel(), run.getStat("luck"), run);
+        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(run.getLevel(), run.getStat("luck"), run, player);
         this.inventory = Bukkit.createInventory(null, 36, "§6Choose Your Power-Up");
         
         Bukkit.getPluginManager().registerEvents(this, plugin);
@@ -52,7 +55,7 @@ public class PowerUpGUI implements Listener {
         this.run = null;
         this.teamRun = teamRun;
         // Use dynamic power-up generation with luck scaling (player-specific)
-        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(teamRun.getLevel(), teamRun.getStat(player, "luck"), teamRun);
+        this.powerUps = plugin.getPowerUpManager().generateDynamicPowerUps(teamRun.getLevel(), teamRun.getStat(player, "luck"), teamRun, player);
         this.inventory = Bukkit.createInventory(null, 36, "§6Choose Your Power-Up");
         
         Bukkit.getPluginManager().registerEvents(this, plugin);
@@ -201,7 +204,18 @@ public class PowerUpGUI implements Listener {
                 lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + weapon.getLevel());
                 lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", weapon.getDamage()));
                 lore.add(ChatColor.AQUA + "Range: " + ChatColor.WHITE + String.format("%.1f", weapon.getRange()) + " blocks");
-                lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", weapon.getAttackSpeed()) + "/s");
+                
+                // Show modified attack speed (with Rapid Fire and Battery)
+                double baseSpeed = weapon.getAttackSpeed();
+                double modifiedSpeed = plugin.getWeaponManager().getModifiedAttackSpeed(player, weapon);
+                if (Math.abs(modifiedSpeed - baseSpeed) > 0.01) {
+                    // Show both base and modified if different
+                    lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", baseSpeed) + 
+                            ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", modifiedSpeed) + "/s");
+                } else {
+                    lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", baseSpeed) + "/s");
+                }
+                
                 if (weapon.getProjectileCount() > 1) {
                     lore.add(ChatColor.LIGHT_PURPLE + "Projectiles: " + ChatColor.WHITE + weapon.getProjectileCount());
                 }
@@ -247,7 +261,18 @@ public class PowerUpGUI implements Listener {
                 lore.add(ChatColor.YELLOW + "Level: " + ChatColor.WHITE + weapon.getLevel());
                 lore.add(ChatColor.RED + "Damage: " + ChatColor.WHITE + String.format("%.1f", weapon.getDamage()));
                 lore.add(ChatColor.AQUA + "Range: " + ChatColor.WHITE + String.format("%.1f", weapon.getRange()) + " blocks");
-                lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", weapon.getAttackSpeed()) + "/s");
+                
+                // Show modified attack speed (with Rapid Fire and Battery)
+                double baseSpeed = weapon.getAttackSpeed();
+                double modifiedSpeed = plugin.getWeaponManager().getModifiedAttackSpeed(player, weapon);
+                if (Math.abs(modifiedSpeed - baseSpeed) > 0.01) {
+                    // Show both base and modified if different
+                    lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", baseSpeed) + 
+                            ChatColor.GRAY + " → " + ChatColor.GREEN + String.format("%.2f", modifiedSpeed) + "/s");
+                } else {
+                    lore.add(ChatColor.GREEN + "Attack Speed: " + ChatColor.WHITE + String.format("%.2f", baseSpeed) + "/s");
+                }
+                
                 if (weapon.getProjectileCount() > 1) {
                     lore.add(ChatColor.LIGHT_PURPLE + "Projectiles: " + ChatColor.WHITE + weapon.getProjectileCount());
                 }
@@ -570,17 +595,41 @@ public class PowerUpGUI implements Listener {
         if (event.getWhoClicked() != player) return;
         
         // Handle items GUI clicks
-        if (itemsGUI != null && event.getInventory().equals(itemsGUI)) {
-            event.setCancelled(true);
-            if (event.getSlot() == 49) {
-                // Back button clicked - reopen power-up GUI
-                player.closeInventory();
-                itemsGUI = null;
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    open();
-                }, 1L);
+        if (itemsGUI != null) {
+            // Check if click was in the items GUI (check both top inventory and clicked inventory)
+            boolean isItemsGUI = event.getView().getTopInventory().equals(itemsGUI) ||
+                                (event.getClickedInventory() != null && event.getClickedInventory().equals(itemsGUI));
+            
+            if (isItemsGUI) {
+                event.setCancelled(true);
+                
+                // Check if back button was clicked (slot 49 in the items GUI)
+                // Check both raw slot and clicked inventory slot
+                boolean isBackButton = false;
+                if (event.getClickedInventory() != null && event.getClickedInventory().equals(itemsGUI)) {
+                    // Clicked in the top inventory (itemsGUI)
+                    if (event.getSlot() == 49) {
+                        isBackButton = true;
+                    }
+                } else if (event.getRawSlot() == 49) {
+                    // Raw slot 49 is in the top inventory (itemsGUI) for a 54-slot inventory
+                    isBackButton = true;
+                }
+                
+                if (isBackButton) {
+                    // Back button clicked - close items GUI and reopen power-up GUI
+                    player.closeInventory();
+                    // Clear itemsGUI reference immediately
+                    itemsGUI = null;
+                    // Reopen power-up GUI after a short delay
+                    Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                        if (player.isOnline() && !player.isDead()) {
+                            open();
+                        }
+                    }, 2L);
+                }
+                return;
             }
-            return;
         }
         
         // Handle main power-up GUI clicks
@@ -605,6 +654,55 @@ public class PowerUpGUI implements Listener {
     }
 
     private void selectPowerUp(PowerUp powerUp) {
+        // Check limits for auras and novas
+        if (powerUp.getType() == PowerUp.PowerUpType.AURA) {
+            int uniqueAuraCount = getUniqueAuraCount();
+            if (uniqueAuraCount >= 2) {
+                // Check if this aura is already owned (can stack same aura)
+                boolean alreadyOwned = hasAura(powerUp.getName());
+                if (!alreadyOwned) {
+                    player.sendMessage(ChatColor.RED + "You can only have 2 unique auras! You already have:");
+                    List<String> currentAuras = getUniqueAuraNames();
+                    for (String aura : currentAuras) {
+                        player.sendMessage(ChatColor.YELLOW + "  • " + aura);
+                    }
+                    return; // Don't close inventory, let them choose something else
+                }
+            }
+        } else if (powerUp.getType() == PowerUp.PowerUpType.WEAPON_MOD) {
+            if (powerUp.getName().contains("Nova")) {
+                // Handle novas separately (max 2)
+                int uniqueNovaCount = getUniqueNovaCount();
+                if (uniqueNovaCount >= 2) {
+                    // Check if this nova is already owned (can stack same nova)
+                    boolean alreadyOwned = hasNova(powerUp.getName());
+                    if (!alreadyOwned) {
+                        player.sendMessage(ChatColor.RED + "You can only have 2 unique novas! You already have:");
+                        List<String> currentNovas = getUniqueNovaNames();
+                        for (String nova : currentNovas) {
+                            player.sendMessage(ChatColor.YELLOW + "  • " + nova);
+                        }
+                        return; // Don't close inventory, let them choose something else
+                    }
+                }
+            } else {
+                // Handle non-nova weapon mods (max 3)
+                int uniqueWeaponModCount = getUniqueWeaponModCount();
+                if (uniqueWeaponModCount >= 3) {
+                    // Check if this weapon mod is already owned (can stack same mod)
+                    boolean alreadyOwned = hasWeaponMod(powerUp.getName());
+                    if (!alreadyOwned) {
+                        player.sendMessage(ChatColor.RED + "You can only have 3 unique weapon mods! You already have:");
+                        List<String> currentMods = getUniqueWeaponModNames();
+                        for (String mod : currentMods) {
+                            player.sendMessage(ChatColor.YELLOW + "  • " + mod);
+                        }
+                        return; // Don't close inventory, let them choose something else
+                    }
+                }
+            }
+        }
+        
         if (run != null) {
             run.addPowerUp(powerUp);
             applyPowerUp(powerUp, run);
@@ -717,6 +815,12 @@ public class PowerUpGUI implements Listener {
                     player.sendMessage(ChatColor.DARK_PURPLE + "Gained " + powerUp.getName() + "!");
                 }
                 break;
+            case SUMMON:
+                run.addPowerUp(powerUp); // Track for summon
+                // Spawn the summon immediately
+                plugin.getGameManager().spawnSummon(player, powerUp, run);
+                player.sendMessage(ChatColor.GREEN + "Summoned " + powerUp.getName() + "!");
+                break;
         }
     }
     
@@ -804,6 +908,12 @@ public class PowerUpGUI implements Listener {
                     player.sendMessage(ChatColor.DARK_PURPLE + "Gained " + powerUp.getName() + "!");
                 }
                 break;
+            case SUMMON:
+                teamRun.addPowerUp(player, powerUp); // Track for summon (player-specific)
+                // Spawn the summon immediately
+                plugin.getGameManager().spawnSummon(player, powerUp, teamRun);
+                player.sendMessage(ChatColor.GREEN + "Summoned " + powerUp.getName() + "!");
+                break;
         }
     }
     
@@ -845,6 +955,9 @@ public class PowerUpGUI implements Listener {
         } else if (id.contains("pickup_range") || id.contains("pickuprange") || id.contains("pickup")) {
             run.addStat("pickup_range", powerUp.getValue());
             player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Pickup Range!");
+        } else if (id.contains("jump_height") || id.contains("jumpheight") || id.contains("jump")) {
+            run.addStat("jump_height", powerUp.getValue());
+            player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Jump Height!");
         } else if (id.contains("difficulty")) {
             run.addStat("difficulty", powerUp.getValue());
             player.sendMessage(ChatColor.DARK_RED + "+" + String.format("%.2fx", powerUp.getValue()) + " Difficulty!");
@@ -894,6 +1007,9 @@ public class PowerUpGUI implements Listener {
         } else if (id.contains("pickup_range") || id.contains("pickuprange") || id.contains("pickup")) {
             teamRun.addStat(player, "pickup_range", powerUp.getValue());
             player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Pickup Range!");
+        } else if (id.contains("jump_height") || id.contains("jumpheight") || id.contains("jump")) {
+            teamRun.addStat(player, "jump_height", powerUp.getValue());
+            player.sendMessage(ChatColor.LIGHT_PURPLE + "+" + String.format("%.1f", powerUp.getValue()) + " Jump Height!");
         } else if (id.contains("difficulty")) {
             teamRun.addStat(player, "difficulty", powerUp.getValue());
             // Notify all team members
@@ -973,6 +1089,208 @@ public class PowerUpGUI implements Listener {
     }
     
     /**
+     * Get count of unique auras the player has
+     */
+    private int getUniqueAuraCount() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return 0;
+        }
+        
+        Set<String> uniqueAuras = new HashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
+                uniqueAuras.add(powerUp.getName());
+            }
+        }
+        return uniqueAuras.size();
+    }
+    
+    /**
+     * Get list of unique aura names the player has
+     */
+    private List<String> getUniqueAuraNames() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return new ArrayList<>();
+        }
+        
+        Set<String> uniqueAuras = new LinkedHashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA) {
+                uniqueAuras.add(powerUp.getName());
+            }
+        }
+        return new ArrayList<>(uniqueAuras);
+    }
+    
+    /**
+     * Check if player has a specific aura
+     */
+    private boolean hasAura(String auraName) {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return false;
+        }
+        
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.AURA && 
+                powerUp.getName().equals(auraName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Get count of unique novas the player has
+     */
+    private int getUniqueNovaCount() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return 0;
+        }
+        
+        Set<String> uniqueNovas = new HashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                powerUp.getName().contains("Nova")) {
+                uniqueNovas.add(powerUp.getName());
+            }
+        }
+        return uniqueNovas.size();
+    }
+    
+    /**
+     * Get list of unique nova names the player has
+     */
+    private List<String> getUniqueNovaNames() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return new ArrayList<>();
+        }
+        
+        Set<String> uniqueNovas = new LinkedHashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                powerUp.getName().contains("Nova")) {
+                uniqueNovas.add(powerUp.getName());
+            }
+        }
+        return new ArrayList<>(uniqueNovas);
+    }
+    
+    /**
+     * Check if player has a specific nova
+     */
+    private boolean hasNova(String novaName) {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return false;
+        }
+        
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                powerUp.getName().contains("Nova") && powerUp.getName().equals(novaName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Get count of unique non-nova weapon mods the player has
+     */
+    private int getUniqueWeaponModCount() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return 0;
+        }
+        
+        Set<String> uniqueMods = new HashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                !powerUp.getName().contains("Nova")) {
+                uniqueMods.add(powerUp.getName());
+            }
+        }
+        return uniqueMods.size();
+    }
+    
+    /**
+     * Get list of unique non-nova weapon mod names the player has
+     */
+    private List<String> getUniqueWeaponModNames() {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return new ArrayList<>();
+        }
+        
+        Set<String> uniqueMods = new LinkedHashSet<>();
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                !powerUp.getName().contains("Nova")) {
+                uniqueMods.add(powerUp.getName());
+            }
+        }
+        return new ArrayList<>(uniqueMods);
+    }
+    
+    /**
+     * Check if player has a specific weapon mod (non-nova)
+     */
+    private boolean hasWeaponMod(String modName) {
+        List<com.eldor.roguecraft.models.PowerUp> powerUps;
+        if (run != null) {
+            powerUps = run.getCollectedPowerUps();
+        } else if (teamRun != null) {
+            powerUps = teamRun.getCollectedPowerUps(player);
+        } else {
+            return false;
+        }
+        
+        for (com.eldor.roguecraft.models.PowerUp powerUp : powerUps) {
+            if (powerUp.getType() == com.eldor.roguecraft.models.PowerUp.PowerUpType.WEAPON_MOD && 
+                !powerUp.getName().contains("Nova") && powerUp.getName().equals(modName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
      * Get list of active aura names
      */
     private List<String> getActiveAuraNames(Object run, Player player) {
@@ -1015,14 +1333,23 @@ public class PowerUpGUI implements Listener {
         // Use dynamic generation with current luck (player-specific for team runs)
         double luck = run != null ? run.getStat("luck") : (teamRun != null ? teamRun.getStat(player, "luck") : 1.0);
         Object currentRun = run != null ? run : teamRun;
-        powerUps.addAll(plugin.getPowerUpManager().generateDynamicPowerUps(getLevel(), luck, currentRun));
+        powerUps.addAll(plugin.getPowerUpManager().generateDynamicPowerUps(getLevel(), luck, currentRun, player));
         setupGUI();
         player.sendMessage(ChatColor.YELLOW + "Power-ups rerolled! " + getRerollsRemaining() + " rerolls remaining.");
     }
 
     @EventHandler
     public void onInventoryClose(InventoryCloseEvent event) {
-        if (event.getInventory().equals(inventory) && event.getPlayer() == player) {
+        if (event.getPlayer() != player) return;
+        
+        // Handle itemsGUI close - just clear the reference, don't close the main GUI
+        if (itemsGUI != null && event.getInventory().equals(itemsGUI)) {
+            itemsGUI = null;
+            return; // Don't process further - itemsGUI close shouldn't trigger main GUI close
+        }
+        
+        // Handle main power-up GUI close
+        if (event.getInventory().equals(inventory)) {
             // Mark player as no longer in GUI
             if (teamRun != null) {
                 teamRun.setPlayerInGUI(player.getUniqueId(), false);

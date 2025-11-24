@@ -28,6 +28,10 @@ public class GameManager {
     private final Map<UUID, BukkitTask> jumpHeightTasks; // Jump height (slow falling) tasks
     private final Map<UUID, BukkitTask> pickupRangeTasks; // Pickup range (item pulling) tasks
     private final Map<UUID, BukkitTask> healthDisplayTasks; // Health display for players
+    private final Map<UUID, BukkitTask> decoyTasks; // Decoy villager spawning tasks
+    private final Map<UUID, Long> lastDecoySpawnTime; // Track last decoy spawn time per team/player
+    private final Set<org.bukkit.entity.Villager> activeDecoys; // Track active decoy villagers
+    private final Set<LivingEntity> activeSummons; // Track active summons
     private final Set<UUID> teamsInWeaponSelection; // Track players currently in weapon selection phase
     private final Map<UUID, Set<LivingEntity>> frozenMobs; // Track frozen mobs per team run
     private final Map<UUID, Long> timeFreezeEndTime; // Track when time freeze ends for each team run (for new spawns)
@@ -44,6 +48,10 @@ public class GameManager {
         this.jumpHeightTasks = new HashMap<>();
         this.pickupRangeTasks = new HashMap<>();
         this.healthDisplayTasks = new HashMap<>();
+        this.decoyTasks = new HashMap<>();
+        this.lastDecoySpawnTime = new HashMap<>();
+        this.activeDecoys = new HashSet<>();
+        this.activeSummons = new HashSet<>();
         this.teamsInWeaponSelection = new HashSet<>();
         this.frozenMobs = new HashMap<>();
         this.timeFreezeEndTime = new HashMap<>();
@@ -108,6 +116,24 @@ public class GameManager {
         if (plugin.getRunManager().hasActiveRun(player)) {
             player.sendMessage("§cYou already have an active run!");
             return false;
+        }
+
+        // Check economy cost if Vault is enabled
+        if (plugin.getVaultIntegration() != null && plugin.getVaultIntegration().isEnabled()) {
+            double startCost = plugin.getConfigManager().getMainConfig().getDouble("economy.start-cost", 0.0);
+            if (startCost > 0.0) {
+                if (!plugin.getVaultIntegration().hasEnough(player, startCost)) {
+                    player.sendMessage("§cYou need " + plugin.getVaultIntegration().format(startCost) + 
+                        " to start a run! You have " + plugin.getVaultIntegration().format(plugin.getVaultIntegration().getBalance(player)));
+                    return false;
+                }
+                if (plugin.getVaultIntegration().withdraw(player, startCost)) {
+                    player.sendMessage("§ePaid " + plugin.getVaultIntegration().format(startCost) + " to start the run.");
+                } else {
+                    player.sendMessage("§cFailed to charge economy cost!");
+                    return false;
+                }
+            }
         }
 
         if (arena == null) {
@@ -426,32 +452,32 @@ public class GameManager {
                     double jumpHeight = teamRun.getStat(player, "jump_height");
                     if (jumpHeight > 0) {
                         // Calculate jump boost level based on jump_height
-                        // 0.5 jump_height = Jump Boost I, 1.0 = Jump Boost II, 1.5 = Jump Boost III, 2.0 = Jump Boost IV
+                        // Any jump_height > 0 = at least Jump Boost I (level 0)
+                        // Scale: 0.5 jump_height per level (so 0.3 gives level 0, 0.8 gives level 1, etc.)
+                        // 0.0-0.5 = Jump Boost I (level 0), 0.5-1.0 = Jump Boost II (level 1), 1.0-1.5 = Jump Boost III (level 2), etc.
                         int jumpBoostLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
-                        if (jumpBoostLevel > 0) {
-                            // Apply jump boost effect (infinite duration, refreshed every tick)
-                            player.addPotionEffect(new org.bukkit.potion.PotionEffect(
-                                org.bukkit.potion.PotionEffectType.JUMP_BOOST, 
-                                100, // 5 seconds duration (refreshed every tick)
-                                jumpBoostLevel - 1, // Level 0-3 (jump boost levels are 0-indexed)
-                                false, // No ambient particles
-                                false  // No icon
-                            ));
-                        }
+                        // Always apply at least level 0 (Jump Boost I) for any value > 0
+                        // Note: Math.floor(0.3 / 0.5) = 0, which is correct (Jump Boost I)
+                        // Apply jump boost effect (infinite duration, refreshed every tick)
+                        player.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.JUMP_BOOST, 
+                            100, // 5 seconds duration (refreshed every tick)
+                            jumpBoostLevel, // Level 0-4 (jump boost levels are 0-indexed)
+                            false, // No ambient particles
+                            true   // Show icon so player knows it's active
+                        ), true); // Force override to ensure it applies
                         
                         // Also apply slow falling for safety (prevents fall damage from higher jumps)
-                        // Higher jump_height = higher slow falling level (capped at level 4)
-                        int slowFallingLevel = (int) Math.min(4, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
-                        if (slowFallingLevel > 0) {
-                            // Apply slow falling effect (infinite duration, refreshed every tick)
-                            player.addPotionEffect(new org.bukkit.potion.PotionEffect(
-                                org.bukkit.potion.PotionEffectType.SLOW_FALLING, 
-                                100, // 5 seconds duration (refreshed every tick)
-                                slowFallingLevel - 1, // Level 0-3 (slow falling levels are 0-indexed)
-                                false, // No ambient particles
-                                false  // No icon
-                            ));
-                        }
+                        // Higher jump_height = higher slow falling level (capped at level 3)
+                        int slowFallingLevel = (int) Math.min(3, Math.floor(jumpHeight / 0.5)); // 0.5 jump_height per level
+                        // Apply slow falling effect (infinite duration, refreshed every tick)
+                        player.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.SLOW_FALLING, 
+                            100, // 5 seconds duration (refreshed every tick)
+                            slowFallingLevel, // Level 0-3 (slow falling levels are 0-indexed)
+                            false, // No ambient particles
+                            false  // No icon (jump boost already shows icon)
+                        ), true); // Force override to ensure it applies
                     }
                 }
             }
@@ -711,6 +737,11 @@ public class GameManager {
 
             // Freeze/unfreeze mobs based on GUI state
             updateMobFreeze(teamRun);
+            
+            // ProtocolLib: Update elite mob glowing for nearby players
+            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                updateEliteMobGlowing(teamRun);
+            }
 
             // Check for level up
             if (teamRun.getExperience() >= teamRun.getExperienceToNextLevel()) {
@@ -723,6 +754,9 @@ public class GameManager {
         regenTasks.put(teamId, regenTask);
         jumpHeightTasks.put(teamId, jumpHeightTask);
         pickupRangeTasks.put(teamId, pickupRangeTask);
+
+        // Decoy villager spawning task
+        startDecoyTask(teamRun, arena);
 
         // Spawn task
         startSpawnTask(teamRun, arena);
@@ -878,6 +912,465 @@ public class GameManager {
 
         spawnTasks.put(teamId, spawnTask);
     }
+    
+    /**
+     * Start decoy villager spawning task
+     * Spawns decoys periodically based on how many decoy items players have
+     */
+    private void startDecoyTask(TeamRun teamRun, Arena arena) {
+        UUID teamId = getTeamRunId(teamRun);
+        lastDecoySpawnTime.put(teamId, 0L);
+        
+        BukkitTask decoyTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!teamRun.isActive()) {
+                return;
+            }
+            
+            // Count total decoy items across all players
+            int totalDecoyCount = 0;
+            int maxPlayerLevel = 1;
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    // Count decoy items for this player
+                    for (com.eldor.roguecraft.models.GachaItem item : teamRun.getCollectedGachaItems(player)) {
+                        if (item.getId().equals("decoy_villager")) {
+                            totalDecoyCount++;
+                        }
+                    }
+                    // Track max level for health scaling
+                    if (teamRun.getLevel() > maxPlayerLevel) {
+                        maxPlayerLevel = teamRun.getLevel();
+                    }
+                }
+            }
+            
+            // Only spawn if players have decoy items
+            if (totalDecoyCount == 0) {
+                return;
+            }
+            
+            // Calculate spawn interval: base 60 seconds (1 minute), reduced by 3 seconds per additional item (min 10 seconds)
+            long baseInterval = 60000L; // 60 seconds (1 minute)
+            long intervalReduction = 3000L * (totalDecoyCount - 1); // 3 seconds per extra item
+            long spawnInterval = Math.max(10000L, baseInterval - intervalReduction); // Minimum 10 seconds
+            
+            // Check if enough time has passed
+            long lastSpawn = lastDecoySpawnTime.getOrDefault(teamId, 0L);
+            long timeSinceLastSpawn = System.currentTimeMillis() - lastSpawn;
+            
+            if (timeSinceLastSpawn >= spawnInterval) {
+                // Spawn decoy villager
+                spawnDecoyVillager(teamRun, arena, totalDecoyCount, maxPlayerLevel);
+                lastDecoySpawnTime.put(teamId, System.currentTimeMillis());
+            }
+        }, 0L, 20L); // Check every second
+        
+        decoyTasks.put(teamId, decoyTask);
+    }
+    
+    /**
+     * Spawn a decoy villager that attracts mob attention
+     */
+    private void spawnDecoyVillager(TeamRun teamRun, Arena arena, int decoyItemCount, int playerLevel) {
+        // Find a random player to spawn decoy near
+        List<Player> activePlayers = new ArrayList<>();
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline() && !player.isDead()) {
+                activePlayers.add(player);
+            }
+        }
+        
+        if (activePlayers.isEmpty()) {
+            return;
+        }
+        
+        Player spawnPlayer = activePlayers.get(new java.util.Random().nextInt(activePlayers.size()));
+        Location spawnLoc = spawnPlayer.getLocation().clone();
+        
+        // Spawn closer to player (1-3 blocks away) so it's definitely visible
+        double angle = Math.random() * Math.PI * 2;
+        double spawnDistance = 1.0 + (Math.random() * 2.0); // 1-3 blocks (closer)
+        spawnLoc.add(Math.cos(angle) * spawnDistance, 0, Math.sin(angle) * spawnDistance);
+        
+        // Ensure spawn location is safe (on ground) - improved logic
+        // Start from player's Y level
+        double startY = spawnPlayer.getLocation().getY();
+        spawnLoc.setY(startY);
+        
+        // Find a safe spawn location - look for air with solid ground below
+        Block block = spawnLoc.getBlock();
+        Block blockBelow = spawnLoc.clone().add(0, -1, 0).getBlock();
+        Block blockAbove = spawnLoc.clone().add(0, 1, 0).getBlock();
+        
+        // Search up and down for a valid spawn location
+        boolean foundValidLocation = false;
+        int searchRange = 10; // Search up to 10 blocks up/down
+        double bestY = startY;
+        
+        for (int offset = 0; offset <= searchRange; offset++) {
+            // Check above player
+            double testY = startY + offset;
+            Location testLoc = spawnLoc.clone();
+            testLoc.setY(testY);
+            Block testBlock = testLoc.getBlock();
+            Block testBelow = testLoc.clone().add(0, -1, 0).getBlock();
+            Block testAbove = testLoc.clone().add(0, 1, 0).getBlock();
+            
+            // Valid location: air at Y, solid below, air above (for headroom)
+            if (!testBlock.getType().isSolid() && 
+                testBelow.getType().isSolid() && 
+                !testAbove.getType().isSolid()) {
+                bestY = testY;
+                foundValidLocation = true;
+                break;
+            }
+            
+            // Check below player
+            if (offset > 0) {
+                testY = startY - offset;
+                testLoc = spawnLoc.clone();
+                testLoc.setY(testY);
+                testBlock = testLoc.getBlock();
+                testBelow = testLoc.clone().add(0, -1, 0).getBlock();
+                testAbove = testLoc.clone().add(0, 1, 0).getBlock();
+                
+                if (!testBlock.getType().isSolid() && 
+                    testBelow.getType().isSolid() && 
+                    !testAbove.getType().isSolid()) {
+                    bestY = testY;
+                    foundValidLocation = true;
+                    break;
+                }
+            }
+        }
+        
+        // Set final spawn location
+        spawnLoc.setY(bestY);
+        
+        // Final validation - ensure the location is actually safe
+        block = spawnLoc.getBlock();
+        blockBelow = spawnLoc.clone().add(0, -1, 0).getBlock();
+        blockAbove = spawnLoc.clone().add(0, 1, 0).getBlock();
+        
+        if (block.getType().isSolid() || !blockBelow.getType().isSolid()) {
+            // Last resort: spawn 2 blocks above player's head
+            plugin.getLogger().warning("[Decoy] Could not find safe ground, spawning above player");
+            spawnLoc.setY(spawnPlayer.getLocation().getY() + 2);
+        } else {
+            // Spawn a couple blocks up from the ground for better visibility
+            spawnLoc.add(0, 2, 0);
+        }
+        
+        plugin.getLogger().info("[Decoy] Final spawn location: " + spawnLoc + " Block: " + spawnLoc.getBlock().getType() + " Below: " + spawnLoc.clone().add(0, -1, 0).getBlock().getType());
+        
+        // Mark spawn location BEFORE spawning so WorldGuardListener can detect it
+        addSpawnLocation(spawnLoc.clone());
+        
+        // ProtocolLib: Create fake entity marker for decoy spawn (optional visual indicator)
+        if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+            for (Player player : teamRun.getPlayers()) {
+                if (player != null && player.isOnline()) {
+                    plugin.getProtocolLibIntegration().createFakeEntityMarker(
+                        player, spawnLoc.clone().add(0, 0.5, 0), 
+                        org.bukkit.entity.EntityType.MARKER, "§eDecoy Spawn"
+                    );
+                }
+            }
+        }
+        
+        // Spawn villager SYNCHRONOUSLY - no delay to prevent anything from killing it first
+        org.bukkit.entity.Villager decoy = null;
+        try {
+            plugin.getLogger().info("[Decoy] Attempting to spawn villager at " + spawnLoc);
+            
+            // Ensure there's at least 2 blocks of air above the spawn location
+            Block checkAbove = spawnLoc.clone().add(0, 1, 0).getBlock();
+            if (checkAbove.getType().isSolid()) {
+                spawnLoc.add(0, 1, 0);
+            }
+            
+            decoy = (org.bukkit.entity.Villager) spawnLoc.getWorld().spawnEntity(spawnLoc, org.bukkit.entity.EntityType.VILLAGER);
+            
+            if (decoy == null) {
+                plugin.getLogger().warning("[Decoy] Failed to spawn villager at " + spawnLoc);
+                return;
+            }
+            
+            plugin.getLogger().info("[Decoy] Villager spawned successfully! Entity ID: " + decoy.getEntityId() + " at " + decoy.getLocation());
+            
+            // CRITICAL: Set metadata IMMEDIATELY - must be first thing after spawn
+            decoy.setMetadata("roguecraft_decoy", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            UUID teamId = getTeamRunId(teamRun);
+            decoy.setMetadata("roguecraft_decoy_team", new org.bukkit.metadata.FixedMetadataValue(plugin, teamId.toString()));
+            decoy.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            decoy.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            
+            // Immediately configure basic properties to prevent death - ALL AT ONCE
+            decoy.setInvulnerable(false); // Allow damage from mobs (but we'll prevent player damage)
+            decoy.setGravity(true); // Allow gravity so it stands on ground
+            decoy.setAI(true); // Enable AI so it can walk around like a normal villager
+            decoy.setSilent(false);
+            decoy.setCollidable(true);
+            if (decoy instanceof org.bukkit.entity.LivingEntity) {
+                ((org.bukkit.entity.LivingEntity) decoy).setRemoveWhenFarAway(false);
+            }
+            
+            // Find the ground and teleport decoy there immediately
+            Location groundLoc = findGroundLocation(spawnLoc);
+            if (groundLoc != null) {
+                decoy.teleport(groundLoc);
+                plugin.getLogger().info("[Decoy] Teleported to ground at " + groundLoc);
+            }
+            
+            // Verify entity is still valid
+            if (!decoy.isValid() || decoy.isDead()) {
+                plugin.getLogger().warning("[Decoy] Entity became invalid immediately after configuration! Valid: " + decoy.isValid() + " Dead: " + decoy.isDead());
+                return;
+            }
+            
+            // Configure decoy immediately
+            configureDecoy(decoy, teamRun, decoyItemCount, playerLevel);
+            
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Decoy] Exception spawning villager: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Configure a decoy villager after it has been spawned
+     */
+    private void configureDecoy(org.bukkit.entity.Villager decoy, TeamRun teamRun, int decoyItemCount, int playerLevel) {
+        // Verify entity is still valid before configuring
+        if (!decoy.isValid() || decoy.isDead()) {
+            plugin.getLogger().warning("[Decoy] Cannot configure - entity is invalid or dead");
+            return;
+        }
+        
+        try {
+            // Configure decoy - make it very visible
+            decoy.setCustomName("§d§l§k||| §d§lDECOY §d§l§k|||");
+            decoy.setCustomNameVisible(true);
+            decoy.setAI(true); // Enable AI so it can walk around like a normal villager
+            decoy.setInvulnerable(false); // Allow damage from mobs (but prevent player damage)
+            decoy.setSilent(false); // Allow sounds so players can hear it
+            decoy.setCollidable(true); // Make sure it can be seen
+            decoy.setGravity(true); // Allow gravity so it stands on ground
+            
+            // Add purple glowing outline (like elite mobs but purple)
+        decoy.setGlowing(true);
+        setPurpleGlowColor(decoy);
+        
+        // Force visibility - ensure it's not invisible
+        if (decoy instanceof org.bukkit.entity.LivingEntity) {
+            ((org.bukkit.entity.LivingEntity) decoy).setRemoveWhenFarAway(false);
+        }
+        
+        // Calculate health: base 20 HP + (10 HP per decoy item) + (5 HP per player level)
+        double baseHealth = 20.0;
+        double itemHealth = 10.0 * decoyItemCount;
+        double levelHealth = 5.0 * playerLevel;
+        double totalHealth = baseHealth + itemHealth + levelHealth;
+        
+        // Set health
+        org.bukkit.attribute.AttributeInstance healthAttr = decoy.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH);
+        if (healthAttr != null) {
+            healthAttr.setBaseValue(totalHealth);
+            decoy.setHealth(totalHealth);
+        }
+        
+            // Mark as decoy and store team ID - MUST be done before WorldGuard checks
+            decoy.setMetadata("roguecraft_decoy", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+            UUID teamId = getTeamRunId(teamRun);
+            decoy.setMetadata("roguecraft_decoy_team", new org.bukkit.metadata.FixedMetadataValue(plugin, teamId.toString()));
+            decoy.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Mark as plugin-spawned for WorldGuard
+            decoy.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true)); // Also mark as plugin mob
+        
+        // Add to active decoys set
+        activeDecoys.add(decoy);
+        
+        // Get the actual location where the villager spawned (might be slightly different)
+        Location actualDecoyLoc = decoy.getLocation();
+        
+        // Visual effects - make it VERY visible at the actual decoy location
+        actualDecoyLoc.getWorld().spawnParticle(org.bukkit.Particle.HEART, actualDecoyLoc, 50, 1.0, 1.5, 1.0, 0.2);
+        actualDecoyLoc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, actualDecoyLoc, 30, 1.0, 1.5, 1.0, 0.2);
+        actualDecoyLoc.getWorld().spawnParticle(org.bukkit.Particle.END_ROD, actualDecoyLoc, 20, 0.5, 1.0, 0.5, 0.1);
+        actualDecoyLoc.getWorld().playSound(actualDecoyLoc, org.bukkit.Sound.ENTITY_VILLAGER_YES, 1.5f, 1.2f);
+        actualDecoyLoc.getWorld().playSound(actualDecoyLoc, org.bukkit.Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 0.8f);
+        
+        // Start purple particle effect around decoy
+        startDecoyParticleEffect(decoy);
+        
+        // Notify players about decoy spawn with coordinates
+        final Location finalDecoyLoc = actualDecoyLoc.clone();
+        final UUID finalTeamId = teamId;
+        for (Player player : teamRun.getPlayers()) {
+            if (player != null && player.isOnline()) {
+                double playerDistance = player.getLocation().distance(finalDecoyLoc);
+                player.sendMessage("§dDecoy spawned! §7(" + String.format("%.1f", playerDistance) + " blocks away)");
+            }
+        }
+        
+        // Debug log
+        plugin.getLogger().info("[Decoy] Spawned decoy at " + finalDecoyLoc + " for team " + finalTeamId + " Entity ID: " + decoy.getEntityId());
+        
+        // Verify decoy is still valid after 1 tick
+        final org.bukkit.entity.Villager finalDecoyCheck = decoy;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (finalDecoyCheck.isValid() && !finalDecoyCheck.isDead()) {
+                plugin.getLogger().info("[Decoy] Decoy still valid after 1 tick at " + finalDecoyCheck.getLocation());
+            } else {
+                plugin.getLogger().warning("[Decoy] Decoy was removed or died immediately! Was valid: " + finalDecoyCheck.isValid() + " Is dead: " + finalDecoyCheck.isDead());
+            }
+        }, 1L);
+        
+        // Make nearby mobs target the decoy
+        makeMobsTargetDecoy(decoy, teamRun, 15.0); // 15 block radius
+        
+        // Auto-remove decoy after 30 seconds or when it dies
+        final org.bukkit.entity.Villager finalDecoy = decoy;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (finalDecoy.isValid() && !finalDecoy.isDead()) {
+                // Clean up particle task
+                if (finalDecoy.hasMetadata("decoy_particle_task")) {
+                    try {
+                        int taskId = finalDecoy.getMetadata("decoy_particle_task").get(0).asInt();
+                        Bukkit.getScheduler().cancelTask(taskId);
+                    } catch (Exception e) {
+                        // Ignore
+                    }
+                }
+                // Remove from team
+                try {
+                    org.bukkit.scoreboard.Scoreboard scoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
+                    org.bukkit.scoreboard.Team team = scoreboard.getTeam("roguecraft_decoy_purple");
+                    if (team != null && team.hasEntry(finalDecoy.getUniqueId().toString())) {
+                        team.removeEntry(finalDecoy.getUniqueId().toString());
+                    }
+                } catch (Exception e) {
+                    // Ignore
+                }
+                finalDecoy.remove();
+                activeDecoys.remove(finalDecoy);
+            }
+        }, 600L); // 30 seconds
+        
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Decoy] Exception configuring decoy: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Make nearby mobs target the decoy villager
+     */
+    private void makeMobsTargetDecoy(org.bukkit.entity.Villager decoy, TeamRun teamRun, double radius) {
+        Location decoyLoc = decoy.getLocation();
+        Set<UUID> teamMemberIds = new HashSet<>(teamRun.getPlayerIds());
+        
+        for (org.bukkit.entity.Entity entity : decoyLoc.getWorld().getNearbyEntities(decoyLoc, radius, radius, radius)) {
+            if (entity instanceof org.bukkit.entity.Mob && entity.hasMetadata("roguecraft_mob")) {
+                org.bukkit.entity.Mob mob = (org.bukkit.entity.Mob) entity;
+                // Only target if mob is not targeting a player
+                if (mob.getTarget() == null || (mob.getTarget() instanceof Player && teamMemberIds.contains(mob.getTarget().getUniqueId()))) {
+                    mob.setTarget(decoy);
+                }
+            }
+        }
+        
+        // Also update targeting periodically while decoy is alive
+        BukkitTask targetingTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!decoy.isValid() || decoy.isDead()) {
+                return;
+            }
+            
+            // Re-target nearby mobs every 2 seconds
+            for (org.bukkit.entity.Entity entity : decoyLoc.getWorld().getNearbyEntities(decoyLoc, radius, radius, radius)) {
+                if (entity instanceof org.bukkit.entity.Mob && entity.hasMetadata("roguecraft_mob")) {
+                    org.bukkit.entity.Mob mob = (org.bukkit.entity.Mob) entity;
+                    // Prioritize decoy over players
+                    if (mob.getTarget() == null || (mob.getTarget() instanceof Player && teamMemberIds.contains(mob.getTarget().getUniqueId()))) {
+                        mob.setTarget(decoy);
+                    }
+                }
+            }
+        }, 0L, 40L); // Every 2 seconds
+        
+        // Cancel task when decoy dies
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            targetingTask.cancel();
+        }, 600L); // 30 seconds
+    }
+    
+    /**
+     * Remove decoy from active set (called when decoy dies)
+     */
+    public void removeDecoy(org.bukkit.entity.Villager decoy) {
+        activeDecoys.remove(decoy);
+    }
+    
+    /**
+     * Remove summon from active set (called when summon dies)
+     */
+    public void removeSummon(LivingEntity summon) {
+        activeSummons.remove(summon);
+    }
+    
+    /**
+     * Find the ground location below a given location
+     */
+    private Location findGroundLocation(Location startLoc) {
+        Location loc = startLoc.clone();
+        Block block = loc.getBlock();
+        Block blockBelow = loc.clone().add(0, -1, 0).getBlock();
+        
+        // If we're already on solid ground, return current location
+        if (blockBelow.getType().isSolid() && !block.getType().isSolid()) {
+            return loc;
+        }
+        
+        // Search downward for solid ground
+        for (int i = 0; i < 20; i++) {
+            loc.add(0, -1, 0);
+            block = loc.getBlock();
+            blockBelow = loc.clone().add(0, -1, 0).getBlock();
+            
+            if (blockBelow.getType().isSolid() && !block.getType().isSolid()) {
+                // Found solid ground with air above
+                return loc;
+            }
+        }
+        
+        // If no ground found, return original location
+        return startLoc;
+    }
+    
+    /**
+     * Find nearest decoy villager to a location
+     */
+    private org.bukkit.entity.Villager findNearestDecoy(Location loc, TeamRun teamRun, double maxDistance) {
+        UUID teamId = getTeamRunId(teamRun);
+        org.bukkit.entity.Villager nearest = null;
+        double nearestDist = maxDistance * maxDistance;
+        
+        for (org.bukkit.entity.Villager decoy : activeDecoys) {
+            if (decoy != null && decoy.isValid() && !decoy.isDead()) {
+                if (decoy.hasMetadata("roguecraft_decoy_team")) {
+                    String decoyTeamId = decoy.getMetadata("roguecraft_decoy_team").get(0).asString();
+                    if (decoyTeamId.equals(teamId.toString())) {
+                        double dist = loc.distanceSquared(decoy.getLocation());
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            nearest = decoy;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return nearest;
+    }
 
     private void spawnWaveMobs(TeamRun teamRun, Arena arena) {
         if (arena.getCenter() == null) return;
@@ -989,6 +1482,11 @@ public class GameManager {
                             applyEliteScaling(mob);
                             // Elite damage resistance is now handled in PlayerListener.onEntityDamage
                             // (replaced armor system with scaling resistance modifier)
+                            
+                            // ProtocolLib: Make elite mob glow for nearby players
+                            if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                                plugin.getProtocolLibIntegration().updateEliteGlowingForNearbyPlayers(mob, 50.0); // 50 block range
+                            }
                         }
                         
                         // Tag undead mobs so we can prevent sunlight damage
@@ -1032,8 +1530,15 @@ public class GameManager {
                                 }
                             }
                             
-                            // Set target if within reasonable range (mob will pathfind naturally after)
-                            if (nearestPlayer != null && nearestDistance < 100) {
+                            // Check for nearby decoy first (prioritize decoy over players)
+                            org.bukkit.entity.Villager nearbyDecoy = findNearestDecoy(mob.getLocation(), teamRun, 15.0);
+                            if (nearbyDecoy != null && nearbyDecoy.isValid() && !nearbyDecoy.isDead()) {
+                                // For mobs that can have targets (like Zombie, Skeleton, etc.)
+                                if (mob instanceof org.bukkit.entity.Mob) {
+                                    ((org.bukkit.entity.Mob) mob).setTarget(nearbyDecoy);
+                                }
+                            } else if (nearestPlayer != null && nearestDistance < 100) {
+                                // Set target if within reasonable range (mob will pathfind naturally after)
                                 // For mobs that can have targets (like Zombie, Skeleton, etc.)
                                 if (mob instanceof org.bukkit.entity.Mob) {
                                     ((org.bukkit.entity.Mob) mob).setTarget(nearestPlayer);
@@ -1092,11 +1597,11 @@ public class GameManager {
                 // Base health: 600 HP
                 double baseHealth = 600.0;
                 
-                // Scale with level (25 HP per level)
-                double levelHealth = baseHealth + (playerLevel * 25.0);
+                // Scale with level (40 HP per level, increased from 25 for harder difficulty)
+                double levelHealth = baseHealth + (playerLevel * 40.0);
                 
-                // Scale with difficulty (0.3 multiplier)
-                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.3);
+                // Scale with difficulty (0.4 multiplier, increased from 0.3 for harder difficulty)
+                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.4);
                 
                 // Solo run - no multiplayer scaling
                 double multiplayerHealth = difficultyHealth;
@@ -1198,11 +1703,11 @@ public class GameManager {
                 // Base health: 600 HP (Wither's default is 600)
                 double baseHealth = 600.0;
                 
-                // Scale with level (reduced from 50 to 25 HP per level)
-                double levelHealth = baseHealth + (playerLevel * 25.0);
+                // Scale with level (40 HP per level, increased from 25 for harder difficulty)
+                double levelHealth = baseHealth + (playerLevel * 40.0);
                 
-                // Scale with difficulty (reduced from 0.5 to 0.3 multiplier)
-                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.3);
+                // Scale with difficulty (0.4 multiplier, increased from 0.3 for harder difficulty)
+                double difficultyHealth = levelHealth * (1.0 + (difficulty - 1.0) * 0.4);
                 
                 // Scale with player count (reduced from 20% to 15% per additional player)
                 double multiplayerHealth = difficultyHealth * (1.0 + (playerCount - 1) * 0.15);
@@ -1958,6 +2463,131 @@ public class GameManager {
     }
     
     /**
+     * Set purple glow color for decoy villagers using scoreboard team
+     */
+    private void setPurpleGlowColor(LivingEntity mob) {
+        try {
+            // Get or create the main scoreboard
+            org.bukkit.scoreboard.Scoreboard scoreboard = Bukkit.getScoreboardManager().getMainScoreboard();
+            org.bukkit.scoreboard.Team team = scoreboard.getTeam("roguecraft_decoy_purple");
+            
+            // Create team if it doesn't exist
+            if (team == null) {
+                team = scoreboard.registerNewTeam("roguecraft_decoy_purple");
+                team.setColor(org.bukkit.ChatColor.LIGHT_PURPLE); // Set team color to purple for purple glow
+            }
+            
+            // Add entity to team (this changes the glow color to purple)
+            if (!team.hasEntry(mob.getUniqueId().toString())) {
+                team.addEntry(mob.getUniqueId().toString());
+            }
+        } catch (Exception e) {
+            // Fallback: if team system fails, just use regular glowing
+            plugin.getLogger().fine("Failed to set purple glow color: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Start purple particle effect around decoy villager
+     */
+    private void startDecoyParticleEffect(LivingEntity decoy) {
+        if (decoy == null || decoy.isDead()) return;
+        
+        // Create task to spawn purple particles around decoy every 0.2 seconds (more frequent)
+        final int[] taskId = new int[1];
+        final LivingEntity finalDecoy = decoy;
+        taskId[0] = plugin.getServer().getScheduler().scheduleSyncRepeatingTask(plugin, new Runnable() {
+            @Override
+            public void run() {
+                if (finalDecoy.isDead() || !finalDecoy.isValid() || !finalDecoy.hasMetadata("roguecraft_decoy")) {
+                    plugin.getServer().getScheduler().cancelTask(taskId[0]);
+                    return;
+                }
+                
+                // Spawn purple particles around the decoy - more particles for visibility
+                Location loc = finalDecoy.getLocation();
+                // Create a purple aura with more particles
+                for (int i = 0; i < 12; i++) {
+                    double angle = (i * Math.PI * 2) / 12;
+                    double radius = 0.8 + (Math.random() * 0.4); // Slight variation in radius
+                    double x = loc.getX() + Math.cos(angle) * radius;
+                    double y = loc.getY() + 0.5 + (Math.random() * 1.0); // Vary height
+                    double z = loc.getZ() + Math.sin(angle) * radius;
+                    
+                    Location particleLoc = new Location(loc.getWorld(), x, y, z);
+                    // Use purple particles for a purple glow effect
+                    org.bukkit.Color purpleColor = Math.random() < 0.7 ? 
+                        org.bukkit.Color.fromRGB(138, 43, 226) : // Purple
+                        org.bukkit.Color.fromRGB(186, 85, 211); // Medium orchid
+                    loc.getWorld().spawnParticle(org.bukkit.Particle.DUST, particleLoc, 2, 
+                        new org.bukkit.Particle.DustOptions(purpleColor, 1.5f));
+                }
+                
+                // Also spawn particles directly on the decoy
+                loc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, loc.clone().add(0, 1, 0), 5, 0.3, 0.5, 0.3, 0);
+            }
+        }, 0L, 4L); // Every 0.2 seconds (4 ticks) for more visible glow
+        
+        // Store task ID for cleanup
+        decoy.setMetadata("decoy_particle_task", new org.bukkit.metadata.FixedMetadataValue(plugin, taskId[0]));
+    }
+    
+    /**
+     * Update elite mob glowing for nearby players (ProtocolLib)
+     */
+    private void updateEliteMobGlowing(TeamRun teamRun) {
+        if (plugin.getProtocolLibIntegration() == null || !plugin.getProtocolLibIntegration().isEnabled()) {
+            return;
+        }
+        
+        UUID teamId = getTeamRunId(teamRun);
+        if (teamId == null) return;
+        
+        Arena arena = null;
+        for (Arena a : plugin.getArenaManager().getAllArenas()) {
+            if (a.isActive()) {
+                arena = a;
+                break;
+            }
+        }
+        
+        if (arena == null || arena.getCenter() == null) return;
+        
+        // Find all elite mobs in the arena and update glowing/boss bars
+        for (Player player : teamRun.getPlayers()) {
+            if (player == null || !player.isOnline()) continue;
+            
+            for (org.bukkit.entity.Entity entity : player.getWorld().getNearbyEntities(arena.getCenter(), arena.getRadius() * 2, 256, arena.getRadius() * 2)) {
+                if (entity instanceof LivingEntity) {
+                    LivingEntity mob = (LivingEntity) entity;
+                    if (mob.hasMetadata("is_elite") || mob.hasMetadata("is_legendary") || mob.hasMetadata("roguecraft_elite_boss")) {
+                        // Update glowing for nearby players (50 block range)
+                        plugin.getProtocolLibIntegration().updateEliteGlowingForNearbyPlayers(mob, 50.0);
+                        
+                        // Add boss bar ONLY for Wither boss (not regular elite mobs)
+                        if (mob.hasMetadata("roguecraft_elite_boss") && !mob.isDead()) {
+                            int barId = mob.getEntityId();
+                            float healthPercent = (float) (mob.getHealth() / mob.getMaxHealth());
+                            String title = mob.getCustomName() != null ? mob.getCustomName() : "Wither Boss";
+                            
+                            // Only update boss bar if it exists, otherwise create it
+                            // This prevents creating duplicate boss bars
+                            if (plugin.getProtocolLibIntegration().hasBossBar(player, barId)) {
+                                // Update existing boss bar
+                                plugin.getProtocolLibIntegration().updateBossBarHealth(player, barId, healthPercent);
+                                plugin.getProtocolLibIntegration().updateBossBarTitle(player, barId, title);
+                            } else {
+                                // Create new boss bar
+                                plugin.getProtocolLibIntegration().setBossBar(player, barId, title, healthPercent);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
      * Update mob custom name to show health
      */
     private void updateMobHealthDisplay(LivingEntity mob) {
@@ -2342,12 +2972,38 @@ public class GameManager {
             // Comprehensive cleanup
             cleanupRun(teamRun, teamId, arena, true);
             
-            // Notify all players
+            // Notify all players and give economy rewards
             for (Player player : teamRun.getPlayers()) {
                 if (player != null && player.isOnline()) {
                     logRunStats(player, teamRun);
+                    
+                    // Give economy rewards if Vault is enabled
+                    if (plugin.getVaultIntegration() != null && plugin.getVaultIntegration().isEnabled()) {
+                        double baseReward = plugin.getConfigManager().getMainConfig().getDouble("economy.completion-reward", 0.0);
+                        double waveBonus = plugin.getConfigManager().getMainConfig().getDouble("economy.wave-bonus-multiplier", 0.0);
+                        double totalReward = baseReward;
+                        
+                        if (waveBonus > 0.0 && teamRun.getWave() > 1) {
+                            totalReward += baseReward * waveBonus * (teamRun.getWave() - 1);
+                        }
+                        
+                        if (totalReward > 0.0) {
+                            if (plugin.getVaultIntegration().deposit(player, totalReward)) {
+                                player.sendMessage("§aYou earned " + plugin.getVaultIntegration().format(totalReward) + " for completing the run!");
+                            }
+                        }
+                    }
                 }
             }
+            
+            // Save team run to database
+            // Get kill counts for each player
+            Map<UUID, Integer> playerKills = plugin.getSynergyManager().getPlayerKillCounts(teamId);
+            // Ensure all players have a kill count entry (even if 0)
+            for (UUID playerId : teamRun.getPlayerIds()) {
+                playerKills.putIfAbsent(playerId, 0);
+            }
+            plugin.getDatabaseManager().saveTeamRun(teamRun, playerKills);
 
             plugin.getRunManager().endTeamRun(teamId);
         } else {
@@ -2381,6 +3037,25 @@ public class GameManager {
         if (pickupRangeTask != null) {
             pickupRangeTask.cancel();
         }
+        
+        BukkitTask decoyTask = decoyTasks.remove(teamId);
+        if (decoyTask != null) {
+            decoyTask.cancel();
+        }
+        
+        lastDecoySpawnTime.remove(teamId);
+        
+        // Clean up active decoys for this team
+        activeDecoys.removeIf(decoy -> {
+            if (decoy != null && decoy.isValid() && decoy.hasMetadata("roguecraft_decoy_team")) {
+                String decoyTeamId = decoy.getMetadata("roguecraft_decoy_team").get(0).asString();
+                if (decoyTeamId.equals(teamId.toString())) {
+                    decoy.remove();
+                    return true;
+                }
+            }
+            return false;
+        });
         
         // Clean up weapon selection tracking (remove all players from this team)
         if (teamRun != null) {
@@ -2444,6 +3119,28 @@ public class GameManager {
             Player player = Bukkit.getPlayer(playerId);
             if (player != null) {
                 logRunStats(player, run);
+                
+                // Give economy rewards if Vault is enabled
+                if (plugin.getVaultIntegration() != null && plugin.getVaultIntegration().isEnabled()) {
+                    double baseReward = plugin.getConfigManager().getMainConfig().getDouble("economy.completion-reward", 0.0);
+                    double waveBonus = plugin.getConfigManager().getMainConfig().getDouble("economy.wave-bonus-multiplier", 0.0);
+                    double totalReward = baseReward;
+                    
+                    if (waveBonus > 0.0 && run.getWave() > 1) {
+                        totalReward += baseReward * waveBonus * (run.getWave() - 1);
+                    }
+                    
+                    if (totalReward > 0.0) {
+                        if (plugin.getVaultIntegration().deposit(player, totalReward)) {
+                            player.sendMessage("§aYou earned " + plugin.getVaultIntegration().format(totalReward) + " for completing the run!");
+                        }
+                    }
+                }
+                
+                // Save run to database
+                UUID runId = run.getPlayerId();
+                int kills = plugin.getSynergyManager().getKillCount(runId);
+                plugin.getDatabaseManager().saveRun(run, kills);
             }
             
             plugin.getRunManager().endRun(playerId);
@@ -2507,6 +3204,16 @@ public class GameManager {
                     
                     // Clean up all gacha item metadata
                     cleanupGachaMetadata(player);
+                    
+                    // ProtocolLib: Clean up fake entities and boss bars
+                    if (plugin.getProtocolLibIntegration() != null && plugin.getProtocolLibIntegration().isEnabled()) {
+                        plugin.getProtocolLibIntegration().cleanupPlayer(player);
+                    }
+                    
+                    // Ensure player can interact with blocks and break them
+                    // Clear any metadata that might prevent interaction
+                    player.removeMetadata("roguecraft_in_run", plugin);
+                    player.removeMetadata("roguecraft_frozen", plugin);
                 }
             }
         } else if (run instanceof Run) {
@@ -2527,8 +3234,18 @@ public class GameManager {
                 // Reset health and speed to default
                 resetPlayerAttributes(player);
                 
+                // Reset hunger to normal
+                player.setFoodLevel(20);
+                player.setSaturation(20.0f);
+                player.setExhaustion(0.0f);
+                
                 // Clean up all gacha item metadata
                 cleanupGachaMetadata(player);
+                
+                // Ensure player can interact with blocks and break them
+                // Clear any metadata that might prevent interaction
+                player.removeMetadata("roguecraft_in_run", plugin);
+                player.removeMetadata("roguecraft_frozen", plugin);
             }
         }
         
@@ -2585,7 +3302,35 @@ public class GameManager {
             }
         }
         
-        // 5. Clean up boss spawn tracking
+        // 5. Clean up decoy villagers
+        activeDecoys.removeIf(decoy -> {
+            if (decoy != null && decoy.isValid()) {
+                if (decoy.hasMetadata("roguecraft_decoy_team")) {
+                    String decoyTeamId = decoy.getMetadata("roguecraft_decoy_team").get(0).asString();
+                    if (decoyTeamId.equals(runId.toString())) {
+                        decoy.remove();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+        
+        // 6. Clean up active summons
+        activeSummons.removeIf(summon -> {
+            if (summon != null && summon.isValid()) {
+                if (summon.hasMetadata("roguecraft_summon_owner")) {
+                    UUID ownerId = UUID.fromString(summon.getMetadata("roguecraft_summon_owner").get(0).asString());
+                    if (ownerId.equals(runId)) {
+                        summon.remove();
+                        return true;
+                    }
+                }
+            }
+            return false;
+        });
+        
+        // 7. Clean up boss spawn tracking
         bossSpawnedWave.remove(runId);
         timeFreezeEndTime.remove(runId);
         lastDamageTime.remove(runId);
@@ -2918,7 +3663,7 @@ public class GameManager {
         }, 10L); // 0.5 second delay
     }
     
-    private void resetPlayerAttributes(Player player) {
+    public void resetPlayerAttributes(Player player) {
         // Reset health to default 20
         org.bukkit.attribute.Attribute healthAttr = org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH;
         org.bukkit.attribute.AttributeInstance healthInstance = player.getAttribute(healthAttr);
@@ -2948,7 +3693,7 @@ public class GameManager {
      * Clean up all gacha item metadata from a player
      * This ensures gacha items don't carry over to new runs
      */
-    private void cleanupGachaMetadata(Player player) {
+    public void cleanupGachaMetadata(Player player) {
         if (player == null) return;
         
         // List of all known gacha item metadata keys
@@ -3120,5 +3865,555 @@ public class GameManager {
         
         player.sendMessage("§6╚════════════════════════════════════╝");
         player.sendMessage("");
+    }
+    
+    /**
+     * Spawn a summon based on the power-up selected
+     */
+    public void spawnSummon(Player player, com.eldor.roguecraft.models.PowerUp powerUp, Object run) {
+        String summonName = powerUp.getName();
+        double duration = powerUp.getValue(); // Duration in seconds
+        int playerLevel = 1;
+        UUID ownerId = player.getUniqueId();
+        Arena arena = null;
+        
+        // Get player level and arena
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            playerLevel = teamRun.getLevel();
+            // Get arena from player's location using isInArena check
+            if (!teamRun.getPlayers().isEmpty()) {
+                Player firstPlayer = teamRun.getPlayers().get(0);
+                for (Arena a : plugin.getArenaManager().getAllArenas()) {
+                    if (a.isInArena(firstPlayer.getLocation())) {
+                        arena = a;
+                        break;
+                    }
+                }
+            }
+        } else if (run instanceof Run) {
+            Run singleRun = (Run) run;
+            playerLevel = singleRun.getLevel();
+            // Get arena from player's location using isInArena check
+            Player runPlayer = Bukkit.getPlayer(singleRun.getPlayerId());
+            if (runPlayer != null) {
+                for (Arena a : plugin.getArenaManager().getAllArenas()) {
+                    if (a.isInArena(runPlayer.getLocation())) {
+                        arena = a;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (arena == null || arena.getCenter() == null) {
+            player.sendMessage(ChatColor.RED + "Could not spawn summon - arena not found!");
+            return;
+        }
+        
+        // Find spawn location near player
+        Location spawnLoc = findSummonSpawnLocation(player.getLocation(), arena);
+        if (spawnLoc == null) {
+            spawnLoc = player.getLocation().add(0, 1, 0);
+        }
+        
+        // Mark spawn location BEFORE spawning so WorldGuardListener can detect it
+        addSpawnLocation(spawnLoc.clone());
+        
+        LivingEntity summon = null;
+        
+        try {
+            if (summonName.equals("Explosive Chicken")) {
+                summon = spawnExplosiveChicken(spawnLoc, player, playerLevel, duration, ownerId);
+            } else if (summonName.equals("Explosive Slime")) {
+                summon = spawnExplosiveSlime(spawnLoc, player, playerLevel, duration, ownerId);
+            } else if (summonName.equals("Creeper Companion")) {
+                summon = spawnCreeperCompanion(spawnLoc, player, playerLevel, duration, ownerId);
+            } else if (summonName.equals("Poisonous Squid")) {
+                summon = spawnPoisonousSquid(spawnLoc, player, playerLevel, duration, ownerId);
+            }
+            
+            if (summon != null) {
+                activeSummons.add(summon);
+                
+                // Visual effects on spawn
+                spawnLoc.getWorld().spawnParticle(org.bukkit.Particle.EXPLOSION, spawnLoc, 1, 0.5, 0.5, 0.5, 0.1);
+                spawnLoc.getWorld().spawnParticle(org.bukkit.Particle.HEART, spawnLoc, 20, 0.5, 1.0, 0.5, 0.1);
+                spawnLoc.getWorld().playSound(spawnLoc, org.bukkit.Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+                
+                // Schedule despawn after duration
+                final LivingEntity finalSummon = summon;
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    if (finalSummon.isValid() && !finalSummon.isDead()) {
+                        finalSummon.getWorld().spawnParticle(org.bukkit.Particle.CAMPFIRE_SIGNAL_SMOKE, finalSummon.getLocation(), 10, 0.5, 0.5, 0.5, 0.1);
+                        finalSummon.remove();
+                        activeSummons.remove(finalSummon);
+                    }
+                }, (long) (duration * 20L)); // Convert seconds to ticks
+                
+                player.sendMessage(ChatColor.GREEN + "Summoned " + summonName + "! It will last " + String.format("%.0f", duration) + " seconds.");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Error spawning summon: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    private Location findSummonSpawnLocation(Location playerLoc, Arena arena) {
+        // Try to spawn 2-4 blocks away from player
+        for (int i = 0; i < 10; i++) {
+            double angle = Math.random() * Math.PI * 2;
+            double distance = 2.0 + (Math.random() * 2.0);
+            double x = playerLoc.getX() + Math.cos(angle) * distance;
+            double z = playerLoc.getZ() + Math.sin(angle) * distance;
+            double y = playerLoc.getY();
+            
+            Location testLoc = new Location(playerLoc.getWorld(), x, y, z);
+            Block block = testLoc.getBlock();
+            Block below = testLoc.clone().subtract(0, 1, 0).getBlock();
+            
+            // Check if there's air above solid ground
+            if (block.getType() == Material.AIR && below.getType().isSolid()) {
+                return testLoc;
+            }
+        }
+        return playerLoc.add(0, 1, 0); // Fallback
+    }
+    
+    private LivingEntity spawnExplosiveChicken(Location loc, Player owner, int level, double duration, UUID ownerId) {
+        org.bukkit.entity.Chicken chicken = (org.bukkit.entity.Chicken) loc.getWorld().spawnEntity(loc, org.bukkit.entity.EntityType.CHICKEN);
+        
+        if (chicken == null) {
+            plugin.getLogger().warning("[Summon] Failed to spawn chicken at " + loc);
+            return null;
+        }
+        
+        // CRITICAL: Set metadata IMMEDIATELY - must be first thing after spawn
+        chicken.setMetadata("roguecraft_summon", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        chicken.setMetadata("roguecraft_summon_owner", new org.bukkit.metadata.FixedMetadataValue(plugin, ownerId.toString()));
+        chicken.setMetadata("roguecraft_summon_type", new org.bukkit.metadata.FixedMetadataValue(plugin, "explosive_chicken"));
+        chicken.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        chicken.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        
+        // Immediately configure basic properties to prevent death - ALL AT ONCE
+        chicken.setAI(true);
+        chicken.setInvulnerable(false); // Allow damage from mobs
+        chicken.setRemoveWhenFarAway(false);
+        chicken.setCollidable(true);
+        
+        // Set scaled health: base 20 + (10 per level)
+        double health = 20.0 + (level * 10.0);
+        org.bukkit.attribute.AttributeInstance healthAttr = chicken.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH);
+        if (healthAttr != null) {
+            healthAttr.setBaseValue(health);
+            chicken.setHealth(health);
+        }
+        
+        // Configure appearance
+        chicken.setCustomName("§c§l💥 Explosive Chicken");
+        chicken.setCustomNameVisible(true);
+        
+        // Make it attack enemies
+        startSummonCombat(chicken, owner, "explosive_chicken", level);
+        
+        return chicken;
+    }
+    
+    private LivingEntity spawnExplosiveSlime(Location loc, Player owner, int level, double duration, UUID ownerId) {
+        // Spawn a medium-sized slime (size 2)
+        org.bukkit.entity.Slime slime = (org.bukkit.entity.Slime) loc.getWorld().spawnEntity(loc, org.bukkit.entity.EntityType.SLIME);
+        
+        if (slime == null) {
+            plugin.getLogger().warning("[Summon] Failed to spawn slime at " + loc);
+            return null;
+        }
+        
+        // CRITICAL: Set metadata IMMEDIATELY - must be first thing after spawn
+        slime.setMetadata("roguecraft_summon", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        slime.setMetadata("roguecraft_summon_owner", new org.bukkit.metadata.FixedMetadataValue(plugin, ownerId.toString()));
+        slime.setMetadata("roguecraft_summon_type", new org.bukkit.metadata.FixedMetadataValue(plugin, "explosive_slime"));
+        slime.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        slime.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        
+        // Immediately configure basic properties to prevent death - ALL AT ONCE
+        slime.setAI(true);
+        slime.setInvulnerable(false); // Allow damage from mobs
+        slime.setRemoveWhenFarAway(false);
+        slime.setCollidable(true);
+        slime.setGravity(true);
+        slime.setSize(2); // Medium-sized slime (size 2)
+        
+        // Set scaled health: base 30 + (15 per level)
+        double health = 30.0 + (level * 15.0);
+        org.bukkit.attribute.AttributeInstance healthAttr = slime.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH);
+        if (healthAttr != null) {
+            healthAttr.setBaseValue(health);
+            slime.setHealth(health);
+        }
+        
+        // Configure appearance
+        slime.setCustomName("§a§l💥 Explosive Slime");
+        slime.setCustomNameVisible(true);
+        
+        // Make it explode with AOE crit damage
+        startSummonCombat(slime, owner, "explosive_slime", level);
+        
+        return slime;
+    }
+    
+    private LivingEntity spawnCreeperCompanion(Location loc, Player owner, int level, double duration, UUID ownerId) {
+        org.bukkit.entity.Creeper creeper = (org.bukkit.entity.Creeper) loc.getWorld().spawnEntity(loc, org.bukkit.entity.EntityType.CREEPER);
+        
+        if (creeper == null) {
+            plugin.getLogger().warning("[Summon] Failed to spawn creeper at " + loc);
+            return null;
+        }
+        
+        // CRITICAL: Set metadata IMMEDIATELY - must be first thing after spawn
+        creeper.setMetadata("roguecraft_summon", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        creeper.setMetadata("roguecraft_summon_owner", new org.bukkit.metadata.FixedMetadataValue(plugin, ownerId.toString()));
+        creeper.setMetadata("roguecraft_summon_type", new org.bukkit.metadata.FixedMetadataValue(plugin, "creeper_companion"));
+        creeper.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        creeper.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        
+        // Immediately configure basic properties to prevent death - ALL AT ONCE
+        creeper.setAI(true);
+        creeper.setInvulnerable(false); // Allow damage from mobs
+        creeper.setRemoveWhenFarAway(false);
+        creeper.setCollidable(true);
+        creeper.setPowered(false); // Not charged
+        creeper.setExplosionRadius(3); // Smaller explosion
+        // Prevent creeper from naturally exploding - we'll control it manually
+        creeper.setMaxFuseTicks(Integer.MAX_VALUE); // Prevent natural explosion
+        
+        // Set scaled health: base 25 + (12 per level)
+        double health = 25.0 + (level * 12.0);
+        org.bukkit.attribute.AttributeInstance healthAttr = creeper.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH);
+        if (healthAttr != null) {
+            healthAttr.setBaseValue(health);
+            creeper.setHealth(health);
+        }
+        
+        // Configure appearance
+        creeper.setCustomName("§a§l💣 Creeper Companion");
+        creeper.setCustomNameVisible(true);
+        
+        // Make it attack enemies
+        startSummonCombat(creeper, owner, "creeper_companion", level);
+        
+        return creeper;
+    }
+    
+    private LivingEntity spawnPoisonousSquid(Location loc, Player owner, int level, double duration, UUID ownerId) {
+        // Find ground location for squid (squids can fall through blocks)
+        Location groundLoc = findGroundLocation(loc);
+        if (groundLoc == null) {
+            groundLoc = loc.clone();
+        }
+        // Spawn 1 block above ground
+        groundLoc.add(0, 1, 0);
+        
+        org.bukkit.entity.GlowSquid squid = (org.bukkit.entity.GlowSquid) groundLoc.getWorld().spawnEntity(groundLoc, org.bukkit.entity.EntityType.GLOW_SQUID);
+        
+        if (squid == null) {
+            plugin.getLogger().warning("[Summon] Failed to spawn glow squid at " + groundLoc);
+            return null;
+        }
+        
+        // CRITICAL: Set metadata IMMEDIATELY - must be first thing after spawn
+        squid.setMetadata("roguecraft_summon", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        squid.setMetadata("roguecraft_summon_owner", new org.bukkit.metadata.FixedMetadataValue(plugin, ownerId.toString()));
+        squid.setMetadata("roguecraft_summon_type", new org.bukkit.metadata.FixedMetadataValue(plugin, "poisonous_squid"));
+        squid.setMetadata("roguecraft_spawned", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        squid.setMetadata("roguecraft_mob", new org.bukkit.metadata.FixedMetadataValue(plugin, true));
+        
+        // Immediately configure basic properties to prevent death - ALL AT ONCE
+        squid.setAI(true);
+        squid.setInvulnerable(false); // Allow damage from mobs
+        squid.setRemoveWhenFarAway(false);
+        squid.setCollidable(true);
+        squid.setGravity(false); // Disable gravity to prevent falling through floor
+        
+        // Set scaled health: base 25 + (12 per level)
+        double health = 25.0 + (level * 12.0);
+        org.bukkit.attribute.AttributeInstance healthAttr = squid.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH);
+        if (healthAttr != null) {
+            healthAttr.setBaseValue(health);
+            squid.setHealth(health);
+        }
+        
+        // Configure appearance
+        squid.setCustomName("§a§l☠ Poisonous Squid");
+        squid.setCustomNameVisible(true);
+        squid.setGlowing(true); // Already glowing, but make sure it's visible
+        
+        // Teleport to ground immediately to ensure it's on solid ground
+        Location finalGroundLoc = findGroundLocation(squid.getLocation());
+        if (finalGroundLoc != null) {
+            finalGroundLoc.add(0, 1, 0); // 1 block above ground
+            squid.teleport(finalGroundLoc);
+        }
+        
+        // Make it flop around and poison enemies
+        startSummonCombat(squid, owner, "poisonous_squid", level);
+        
+        return squid;
+    }
+    
+    private void startSummonCombat(LivingEntity summon, Player owner, String summonType, int level) {
+        // Task to make summon attack nearby enemies
+        // Run more frequently for squid (every tick) to ensure poison is applied
+        long taskInterval = summonType.equals("poisonous_squid") ? 1L : 10L;
+        BukkitTask combatTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!summon.isValid() || summon.isDead()) {
+                return;
+            }
+            
+            // Special behavior for poisonous squid - poison nearby enemies
+            if (summonType.equals("poisonous_squid")) {
+                Location squidLoc = summon.getLocation();
+                double poisonRadius = 5.0; // 5 block radius
+                
+                // Keep squid on the ground (prevent falling through floor)
+                Location groundCheck = findGroundLocation(squidLoc);
+                if (groundCheck != null) {
+                    double groundY = groundCheck.getY() + 1.0; // 1 block above ground
+                    if (squidLoc.getY() < groundY - 0.5 || squidLoc.getY() > groundY + 2.0) {
+                        // Teleport back to ground level
+                        Location newLoc = squidLoc.clone();
+                        newLoc.setY(groundY);
+                        summon.teleport(newLoc);
+                    }
+                }
+                
+                // Find and poison nearby enemies (every tick for better responsiveness)
+                // Apply poison every 20 ticks (1 second) to avoid spam but keep it continuous
+                if (summon.getTicksLived() % 20 == 0) {
+                    for (org.bukkit.entity.Entity entity : squidLoc.getWorld().getNearbyEntities(squidLoc, poisonRadius, poisonRadius, poisonRadius)) {
+                        if (entity instanceof LivingEntity && !(entity instanceof Player) && entity != summon) {
+                            // Don't poison other summons or decoys
+                            if (entity.hasMetadata("roguecraft_summon") || entity.hasMetadata("roguecraft_decoy")) {
+                                continue;
+                            }
+                            
+                            // Only poison hostile mobs
+                            if (entity instanceof org.bukkit.entity.Monster || entity.hasMetadata("roguecraft_mob")) {
+                                LivingEntity target = (LivingEntity) entity;
+                                
+                                // Apply poison effect (5 seconds, level 1) - force override to refresh
+                                target.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                                    org.bukkit.potion.PotionEffectType.POISON, 
+                                    100, // 5 seconds (20 ticks per second)
+                                    0, // Level 1 poison
+                                    true, // Ambient
+                                    true, // Particles
+                                    true // Icon
+                                ), true); // Force override to refresh duration
+                                
+                                // Visual effect - use green slime particles for poison (same as Moldy Cheese)
+                                target.getWorld().spawnParticle(org.bukkit.Particle.ITEM_SLIME, target.getLocation().add(0, 1, 0), 5, 0.3, 0.5, 0.3, 0.02);
+                                target.getWorld().spawnParticle(org.bukkit.Particle.SMOKE, target.getLocation().add(0, 1, 0), 3, 0.3, 0.5, 0.3, 0.05);
+                            }
+                        }
+                    }
+                }
+                
+                // Make squid flop around (but keep it on the ground)
+                if (Math.random() < 0.3) { // 30% chance to flop
+                    double angle = Math.random() * Math.PI * 2;
+                    double distance = 0.5 + (Math.random() * 1.0);
+                    double x = squidLoc.getX() + Math.cos(angle) * distance;
+                    double z = squidLoc.getZ() + Math.sin(angle) * distance;
+                    
+                    // Find ground at new location
+                    Location testLoc = new Location(squidLoc.getWorld(), x, squidLoc.getY(), z);
+                    Location newGround = findGroundLocation(testLoc);
+                    double y = squidLoc.getY();
+                    if (newGround != null) {
+                        y = newGround.getY() + 1.0; // 1 block above ground
+                    }
+                    
+                    Location newLoc = new Location(squidLoc.getWorld(), x, y, z);
+                    summon.teleport(newLoc);
+                    // Visual effect for flopping
+                    squidLoc.getWorld().spawnParticle(org.bukkit.Particle.SQUID_INK, squidLoc, 3, 0.3, 0.3, 0.3, 0.1);
+                }
+                
+                return; // Don't set target for squid (it doesn't attack directly)
+            }
+            
+            // Special behavior for explosive slime - AOE crit explosion damage
+            if (summonType.equals("explosive_slime")) {
+                Location slimeLoc = summon.getLocation();
+                double explosionRadius = 4.0; // 4 block radius for AOE
+                
+                // Find nearest enemy to target
+                LivingEntity target = findNearestEnemyForSummon(summon, owner, 8.0);
+                
+                // Explode every 2 seconds (40 ticks) if there are enemies nearby
+                if (target != null && Math.random() < 0.05) { // 5% chance per tick = roughly every 2 seconds
+                    // Calculate base damage (scales with level)
+                    double baseDamage = 10.0 + (level * 3.0);
+                    
+                    // Apply crit damage multiplier (1.5x base, scales with level)
+                    double critMultiplier = 1.5 + (level * 0.1);
+                    double critDamage = baseDamage * critMultiplier;
+                    
+                    // Explode at slime location - damage all enemies in radius
+                    for (org.bukkit.entity.Entity entity : slimeLoc.getWorld().getNearbyEntities(slimeLoc, explosionRadius, explosionRadius, explosionRadius)) {
+                        if (entity instanceof LivingEntity && !(entity instanceof Player) && entity != summon) {
+                            // Don't damage other summons or decoys
+                            if (entity.hasMetadata("roguecraft_summon") || entity.hasMetadata("roguecraft_decoy")) {
+                                continue;
+                            }
+                            
+                            // Only damage hostile mobs
+                            if (entity instanceof org.bukkit.entity.Monster || entity.hasMetadata("roguecraft_mob")) {
+                                LivingEntity enemy = (LivingEntity) entity;
+                                
+                                // Calculate distance for damage falloff
+                                double distance = slimeLoc.distance(enemy.getLocation());
+                                double damageMultiplier = 1.0 - (distance / explosionRadius) * 0.5; // 50% damage reduction at edge
+                                double finalDamage = critDamage * damageMultiplier;
+                                
+                                // Apply tiered crit damage reduction based on mob type (same as player crits)
+                                boolean isBoss = enemy.hasMetadata("roguecraft_boss") || enemy.hasMetadata("roguecraft_elite_boss");
+                                boolean isLegendary = enemy.hasMetadata("is_legendary");
+                                boolean isElite = enemy.hasMetadata("roguecraft_elite") || enemy.hasMetadata("is_elite");
+                                
+                                if (isBoss || isLegendary) {
+                                    finalDamage *= 0.5; // 50% crit damage reduction
+                                } else if (isElite) {
+                                    finalDamage *= 0.75; // 25% crit damage reduction
+                                }
+                                
+                                // Deal damage
+                                enemy.damage(finalDamage, summon);
+                                
+                                // Visual effects - crit particles
+                                enemy.getWorld().spawnParticle(org.bukkit.Particle.CRIT, enemy.getLocation().add(0, 1, 0), 10, 0.5, 0.5, 0.5, 0.1);
+                                enemy.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, enemy.getLocation().add(0, 1, 0), 5, 0.3, 0.5, 0.3, 0.1);
+                            }
+                        }
+                    }
+                    
+                    // Explosion visual and sound effects at slime location
+                    slimeLoc.getWorld().spawnParticle(org.bukkit.Particle.EXPLOSION, slimeLoc, 1, 0.5, 0.5, 0.5, 0.1);
+                    slimeLoc.getWorld().spawnParticle(org.bukkit.Particle.CRIT, slimeLoc, 30, explosionRadius, 1.0, explosionRadius, 0.1);
+                    slimeLoc.getWorld().spawnParticle(org.bukkit.Particle.ENCHANT, slimeLoc, 20, explosionRadius, 1.0, explosionRadius, 0.1);
+                    slimeLoc.getWorld().playSound(slimeLoc, org.bukkit.Sound.ENTITY_PLAYER_ATTACK_CRIT, 1.0f, 1.0f);
+                    slimeLoc.getWorld().playSound(slimeLoc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 0.5f, 1.5f);
+                }
+                
+                // Make slime move towards nearest enemy
+                if (target != null) {
+                    if (summon instanceof org.bukkit.entity.Mob) {
+                        ((org.bukkit.entity.Mob) summon).setTarget(target);
+                    }
+                }
+                
+                return; // Don't use default mob targeting for slime
+            }
+            
+            // Find nearest enemy
+            LivingEntity target = findNearestEnemyForSummon(summon, owner, 15.0);
+            
+            if (target != null && summon instanceof org.bukkit.entity.Mob) {
+                org.bukkit.entity.Mob mob = (org.bukkit.entity.Mob) summon;
+                mob.setTarget(target);
+                
+                // Special behaviors based on type
+                if (summonType.equals("explosive_chicken")) {
+                    // Chicken explodes when it dies (handled in death event)
+                    // Also occasionally spawns fire particles
+                    if (Math.random() < 0.1) {
+                        summon.getWorld().spawnParticle(org.bukkit.Particle.FLAME, summon.getLocation(), 3, 0.3, 0.3, 0.3, 0.05);
+                    }
+                } else if (summonType.equals("creeper_companion")) {
+                    // Creeper explodes when near enemies (but not immediately - need to be close for a moment)
+                    double distance = summon.getLocation().distance(target.getLocation());
+                    // Only explode if very close (1.5 blocks) to prevent immediate explosion
+                    // Also check that creeper has been alive for at least 2 seconds to prevent instant explosion
+                    if (distance < 1.5 && summon.getTicksLived() > 40) {
+                        // Trigger explosion manually
+                        Location loc = summon.getLocation();
+                        loc.getWorld().createExplosion(loc, 3.0f, false, false);
+                        loc.getWorld().spawnParticle(org.bukkit.Particle.EXPLOSION, loc, 1, 0.5, 0.5, 0.5, 0.1);
+                        loc.getWorld().playSound(loc, org.bukkit.Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.0f);
+                        // Damage nearby enemies
+                        for (org.bukkit.entity.Entity nearby : loc.getWorld().getNearbyEntities(loc, 3.0, 3.0, 3.0)) {
+                            if (nearby instanceof LivingEntity && nearby != summon && !(nearby instanceof Player)) {
+                                // Don't damage other summons or decoys
+                                if (!nearby.hasMetadata("roguecraft_summon") && !nearby.hasMetadata("roguecraft_decoy")) {
+                                    ((LivingEntity) nearby).damage(20.0 + (level * 5.0));
+                                }
+                            }
+                        }
+                        // Remove creeper after explosion
+                        summon.remove();
+                        activeSummons.remove(summon);
+                        return; // Exit early since creeper is removed
+                    }
+                }
+            }
+            
+            // Make mobs target summons (especially chicken) - similar to decoy targeting
+            if (summonType.equals("explosive_chicken") || summonType.equals("creeper_companion")) {
+                // Make nearby mobs target the summon
+                Location summonLoc = summon.getLocation();
+                double targetRadius = 10.0;
+                for (org.bukkit.entity.Entity entity : summonLoc.getWorld().getNearbyEntities(summonLoc, targetRadius, targetRadius, targetRadius)) {
+                    if (entity instanceof org.bukkit.entity.Mob && entity.hasMetadata("roguecraft_mob")) {
+                        org.bukkit.entity.Mob mob = (org.bukkit.entity.Mob) entity;
+                        // Only target if mob doesn't have a target or target is a player
+                        if (mob.getTarget() == null || (mob.getTarget() instanceof Player)) {
+                            mob.setTarget(summon);
+                        }
+                    }
+                }
+            }
+        }, 0L, 10L); // Check every 0.5 seconds
+        
+        // Store task ID for cleanup
+        summon.setMetadata("summon_combat_task", new org.bukkit.metadata.FixedMetadataValue(plugin, combatTask.getTaskId()));
+    }
+    
+    private LivingEntity findNearestEnemyForSummon(LivingEntity summon, Player owner, double radius) {
+        Location summonLoc = summon.getLocation();
+        LivingEntity nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        
+        // Get team members if team run
+        Set<UUID> teamMemberIds = new HashSet<>();
+        Object run = plugin.getRunManager().getTeamRun(owner);
+        if (run == null) {
+            run = plugin.getRunManager().getRun(owner);
+        }
+        if (run instanceof TeamRun) {
+            TeamRun teamRun = (TeamRun) run;
+            teamMemberIds.addAll(teamRun.getPlayerIds());
+        } else if (run instanceof Run) {
+            teamMemberIds.add(((Run) run).getPlayerId());
+        }
+        
+        for (org.bukkit.entity.Entity entity : summonLoc.getWorld().getNearbyEntities(summonLoc, radius, radius, radius)) {
+            if (entity instanceof LivingEntity && !(entity instanceof Player) && !entity.isDead()) {
+                // Don't target players, other summons, or decoys
+                if (entity.hasMetadata("roguecraft_summon") || entity.hasMetadata("roguecraft_decoy")) {
+                    continue;
+                }
+                
+                // Only target hostile mobs
+                if (entity instanceof org.bukkit.entity.Monster || entity.hasMetadata("roguecraft_mob")) {
+                    double dist = summonLoc.distance(entity.getLocation());
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearest = (LivingEntity) entity;
+                    }
+                }
+            }
+        }
+        
+        return nearest;
     }
 }

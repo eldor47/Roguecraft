@@ -156,8 +156,8 @@ public class Weapon {
             Material.FIRE_CHARGE,
             8.0,  // base damage
             20.0, // base range
-            1.0,  // base attack speed (1 per second)
-            1,    // base projectile count
+            1.5,  // base attack speed (1.5 per second, increased from 1.0)
+            3,    // base projectile count (increased from 1 to 3)
             2.0   // base AOE
         ),
         ARROW_STORM(
@@ -218,7 +218,7 @@ public class Weapon {
             28.0, // base range
             2.5,  // base attack speed (2.5 per second)
             1,    // base projectile count
-            0.5   // base AOE
+            2.0   // base AOE (increased from 0.5 for better hit detection)
         );
         
         private final String displayName;

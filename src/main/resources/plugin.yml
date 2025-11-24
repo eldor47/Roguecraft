@@ -30,6 +30,7 @@ permissions:
       roguecraft.admin.reload: true
       roguecraft.admin.arena: true
       roguecraft.admin.setup: true
+      roguecraft.admin.give: true
   roguecraft.admin.reload:
     description: Allows reloading configuration
     default: op
@@ -38,6 +39,9 @@ permissions:
     default: op
   roguecraft.admin.setup:
     description: Allows setting up arena regions
+    default: op
+  roguecraft.admin.give:
+    description: Allows giving gacha items for testing
     default: op
 
 

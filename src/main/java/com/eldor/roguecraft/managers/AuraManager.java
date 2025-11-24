@@ -39,7 +39,7 @@ public class AuraManager implements Listener {
         // Cancel existing task if any
         stopAuras(runId);
         
-        // Start periodic aura task (every 20 ticks = 1 second)
+        // Start periodic aura task (every 10 ticks = 0.5 seconds, less frequent for better performance)
         BukkitTask task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (!isRunActive(run)) {
                 stopAuras(runId);
@@ -48,7 +48,7 @@ public class AuraManager implements Listener {
             
             // Process all active auras
             processAuras(run);
-        }, 20L, 20L); // Every second
+        }, 10L, 10L); // Every 0.5 seconds (reduced frequency, particles follow player position)
         
         auraTasks.put(runId, task);
     }
@@ -87,7 +87,10 @@ public class AuraManager implements Listener {
                 }
             }
             
-            List<PowerUp> auras = getActiveAuras(run);
+            List<PowerUp> auras = getActiveAuras(run, player);
+            
+            // Visualize auras with particles around the player
+            visualizeAuras(player, auras);
             
             for (PowerUp aura : auras) {
                 String auraName = aura.getName();
@@ -131,10 +134,16 @@ public class AuraManager implements Listener {
         }
         if (run == null || !isRunActive(run)) return;
         
-        // Check for Thorns Aura
-        PowerUp thornsAura = getAuraByName(run, "Thorns Aura");
-        if (thornsAura != null && event.getDamager() instanceof LivingEntity) {
-            double reflectPercent = thornsAura.getValue() * 10.0; // 10% per value point
+        // Check for Thorns Aura (stack all Thorns auras)
+        List<PowerUp> thornsAuras = getAurasByName(run, player, "Thorns Aura");
+        if (!thornsAuras.isEmpty() && event.getDamager() instanceof LivingEntity) {
+            // Sum up values from all Thorns auras (stacking)
+            double totalValue = 0.0;
+            for (PowerUp aura : thornsAuras) {
+                totalValue += aura.getValue();
+            }
+            
+            double reflectPercent = totalValue * 10.0; // 10% per value point
             reflectPercent = Math.min(50.0, reflectPercent); // Cap at 50%
             
             double reflectDamage = event.getFinalDamage() * (reflectPercent / 100.0);
@@ -148,10 +157,15 @@ public class AuraManager implements Listener {
             player.playSound(player.getLocation(), Sound.ENTITY_IRON_GOLEM_HURT, 0.3f, 1.5f);
         }
         
-        // Check for Shield Aura - absorb damage
-        PowerUp shieldAura = getAuraByName(run, "Shield Aura");
-        if (shieldAura != null) {
-            double shieldAmount = shieldAura.getValue() * 5.0; // 5 HP per value point
+        // Check for Shield Aura - absorb damage (stack all Shield auras)
+        List<PowerUp> shieldAuras = getAurasByName(run, player, "Shield Aura");
+        if (!shieldAuras.isEmpty()) {
+            // Sum up values from all Shield auras (stacking)
+            double totalValue = 0.0;
+            for (PowerUp aura : shieldAuras) {
+                totalValue += aura.getValue();
+            }
+            double shieldAmount = totalValue * 5.0; // 5 HP per value point
             
             // Check if player has shield metadata
             if (player.hasMetadata("shield_remaining")) {
@@ -343,12 +357,13 @@ public class AuraManager implements Listener {
         return Collections.emptyList();
     }
     
-    private List<PowerUp> getActiveAuras(Object run) {
+    private List<PowerUp> getActiveAuras(Object run, Player player) {
         List<PowerUp> auras = new ArrayList<>();
         
         if (run instanceof TeamRun) {
             TeamRun teamRun = (TeamRun) run;
-            for (PowerUp powerUp : teamRun.getCollectedPowerUps()) {
+            // Get player-specific auras for team runs
+            for (PowerUp powerUp : teamRun.getCollectedPowerUps(player.getUniqueId())) {
                 if (powerUp.getType() == PowerUp.PowerUpType.AURA) {
                     auras.add(powerUp);
                 }
@@ -365,13 +380,115 @@ public class AuraManager implements Listener {
         return auras;
     }
     
-    private PowerUp getAuraByName(Object run, String name) {
-        for (PowerUp aura : getActiveAuras(run)) {
+    private PowerUp getAuraByName(Object run, Player player, String name) {
+        List<PowerUp> auras = getAurasByName(run, player, name);
+        return auras.isEmpty() ? null : auras.get(0);
+    }
+    
+    /**
+     * Get all auras with a specific name (for stacking)
+     */
+    private List<PowerUp> getAurasByName(Object run, Player player, String name) {
+        List<PowerUp> matchingAuras = new ArrayList<>();
+        for (PowerUp aura : getActiveAuras(run, player)) {
             if (aura.getName().equals(name)) {
-                return aura;
+                matchingAuras.add(aura);
             }
         }
-        return null;
+        return matchingAuras;
+    }
+    
+    /**
+     * Visualize auras with particles around the player (reduced count, follows player)
+     */
+    private void visualizeAuras(Player player, List<PowerUp> auras) {
+        if (auras.isEmpty()) {
+            return;
+        }
+        
+        // Get player's current location (always use current location so particles follow)
+        org.bukkit.Location loc = player.getLocation();
+        double radius = 1.2;
+        int particlesPerAura = 2; // Reduced from 6 to 2 particles per aura
+        
+        // Count auras by type
+        Map<String, Integer> auraCounts = new HashMap<>();
+        for (PowerUp aura : auras) {
+            auraCounts.put(aura.getName(), auraCounts.getOrDefault(aura.getName(), 0) + 1);
+        }
+        
+        // Use time-based rotation for smooth orbiting
+        long time = System.currentTimeMillis();
+        double rotationOffset = (time / 50.0) % 360;
+        
+        // Spawn particles for each unique aura type
+        int angleStep = 360 / Math.max(1, auraCounts.size());
+        int currentAngle = 0;
+        
+        for (Map.Entry<String, Integer> entry : auraCounts.entrySet()) {
+            String auraName = entry.getKey();
+            int count = entry.getValue();
+            
+            // Max 2 particles per aura (even if stacked)
+            int particles = Math.min(particlesPerAura, 2);
+            
+            // Calculate base angle for this aura type
+            double baseAngle = Math.toRadians(currentAngle + rotationOffset);
+            currentAngle += angleStep;
+            
+            // Spawn particles in a circle around player (always at current location)
+            for (int i = 0; i < particles; i++) {
+                double particleAngle = baseAngle + (2 * Math.PI * i / particles);
+                double x = Math.cos(particleAngle) * radius;
+                double z = Math.sin(particleAngle) * radius;
+                // Subtle floating effect
+                double y = 0.5 + (Math.sin(time / 300.0 + i * 0.5) * 0.3);
+                
+                // Always use player's current location so particles follow
+                org.bukkit.Location particleLoc = loc.clone().add(0, player.getEyeHeight() * 0.5, 0).add(x, y, z);
+                
+                // Choose particle based on aura type
+                Particle particle = getParticleForAura(auraName);
+                if (particle != null) {
+                    try {
+                        // Spawn particle at current player location (follows player)
+                        player.spawnParticle(particle, particleLoc, 1, 0.0, 0.0, 0.0, 0.0);
+                    } catch (IllegalArgumentException e) {
+                        try {
+                            player.spawnParticle(particle, particleLoc, 1);
+                        } catch (Exception e2) {
+                            player.spawnParticle(Particle.ENCHANT, particleLoc, 1, 0.0, 0.0, 0.0, 0.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get particle type for each aura
+     */
+    private Particle getParticleForAura(String auraName) {
+        switch (auraName) {
+            case "Vampire Aura":
+                return Particle.DRAGON_BREATH; // Purple/red particles
+            case "Thorns Aura":
+                return Particle.CRIT; // Critical hit particles
+            case "Regeneration Aura":
+                return Particle.HEART; // Heart particles
+            case "Fire Aura":
+                return Particle.FLAME; // Fire particles
+            case "Ice Aura":
+                return Particle.SNOWFLAKE; // Snow particles
+            case "Lightning Aura":
+                return Particle.ELECTRIC_SPARK; // Electric particles
+            case "Poison Aura":
+                return Particle.SMOKE; // Smoke particles (green would be better but requires color data)
+            case "Shield Aura":
+                return Particle.END_ROD; // End rod particles (shield-like)
+            default:
+                return Particle.ENCHANT; // Default enchant particles
+        }
     }
     
     /**

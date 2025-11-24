@@ -202,6 +202,26 @@ public class GachaManager {
             0.08
         ));
         
+        registerItem(new GachaItem(
+            "totem_of_undying",
+            "Totem of Undying",
+            "§eRevives you instantly when you die, allowing the run to continue (one-time use)",
+            GachaItem.ItemRarity.LEGENDARY,
+            Material.TOTEM_OF_UNDYING,
+            GachaItem.ItemEffect.SPECIAL_ABILITY,
+            1.0
+        ));
+        
+        registerItem(new GachaItem(
+            "decoy_villager",
+            "Decoy Villager",
+            "§eSpawns a decoy villager that attracts enemy attention (stacks for faster spawn rate and more health)",
+            GachaItem.ItemRarity.RARE,
+            Material.VILLAGER_SPAWN_EGG,
+            GachaItem.ItemEffect.PASSIVE_EFFECT,
+            1.0
+        ));
+        
         plugin.getLogger().info("[Gacha] Registered " + items.size() + " gacha items");
     }
     

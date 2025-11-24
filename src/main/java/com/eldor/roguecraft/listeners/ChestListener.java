@@ -40,8 +40,17 @@ public class ChestListener implements Listener {
         TeamRun teamRun = plugin.getRunManager().getTeamRun(player.getUniqueId());
         Run run = plugin.getRunManager().getRun(player.getUniqueId());
         
-        if ((teamRun == null || !teamRun.isActive()) && (run == null || !run.isActive())) {
-            return;
+        // Only handle chest interaction if player has an ACTIVE run
+        // If run is not active or doesn't exist, allow normal interaction
+        boolean inActiveRun = false;
+        if (teamRun != null && teamRun.isActive()) {
+            inActiveRun = true;
+        } else if (run != null && run.isActive()) {
+            inActiveRun = true;
+        }
+        
+        if (!inActiveRun) {
+            return; // Not in an active run, allow normal interaction
         }
         
         // Get team ID
