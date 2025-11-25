@@ -7,6 +7,7 @@ import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -21,6 +22,12 @@ import java.util.List;
  * GUI for displaying leaderboard
  */
 public class LeaderboardGUI implements Listener {
+    private static final int[] RUN_SLOTS = {
+        19, 20, 21, 22, 23, 24, 25,
+        28, 29, 30, 31, 32, 33, 34,
+        37, 38, 39, 40, 41, 42, 43
+    };
+
     private final RoguecraftPlugin plugin;
     private final Player player;
     private final Inventory inventory;
@@ -72,10 +79,13 @@ public class LeaderboardGUI implements Listener {
         inventory.setItem(4, title);
         
         // Display top runs
-        int[] slots = {19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43};
-        for (int i = 0; i < topRuns.size() && i < slots.length; i++) {
+        if (topRuns.isEmpty()) {
+            inventory.setItem(22, createEmptyStateItem());
+        } else {
+            for (int i = 0; i < topRuns.size() && i < RUN_SLOTS.length; i++) {
             DatabaseManager.RunHistory run = topRuns.get(i);
-            addRunItem(slots[i], run, i + 1);
+                addRunItem(RUN_SLOTS[i], run, i + 1);
+            }
         }
         
         // Close button
@@ -133,6 +143,18 @@ public class LeaderboardGUI implements Listener {
         inventory.setItem(slot, item);
     }
     
+    private ItemStack createEmptyStateItem() {
+        ItemStack paper = new ItemStack(Material.PAPER);
+        ItemMeta meta = paper.getItemMeta();
+        meta.setDisplayName(ChatColor.GRAY + "No runs recorded yet");
+        List<String> lore = new ArrayList<>();
+        lore.add(ChatColor.DARK_GRAY + "Play some runs to populate");
+        lore.add(ChatColor.DARK_GRAY + "the leaderboard!");
+        meta.setLore(lore);
+        paper.setItemMeta(meta);
+        return paper;
+    }
+    
     private String formatDuration(long seconds) {
         long hours = seconds / 3600;
         long minutes = (seconds % 3600) / 60;
@@ -167,11 +189,11 @@ public class LeaderboardGUI implements Listener {
         // Check if clicked on a run item
         for (int i = 0; i < topRuns.size(); i++) {
             DatabaseManager.RunHistory run = topRuns.get(i);
-            int[] slots = {19, 20, 21, 22, 23, 24, 25, 28, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43};
-            if (i < slots.length && slot == slots[i]) {
-                // Open run details
-                player.performCommand("rc run " + run.runId);
-                player.closeInventory();
+            if (i < RUN_SLOTS.length && slot == RUN_SLOTS[i]) {
+                RunDetailsGUI detailsGUI = new RunDetailsGUI(plugin, player, run.runId, run.playerUuid);
+                if (!detailsGUI.open()) {
+                    player.sendMessage(ChatColor.RED + "Unable to open run details.");
+                }
                 return;
             }
         }
@@ -181,7 +203,7 @@ public class LeaderboardGUI implements Listener {
     public void onInventoryClose(InventoryCloseEvent event) {
         if (event.getInventory() == inventory && event.getPlayer() == player) {
             // Unregister listener when GUI closes
-            org.bukkit.event.HandlerList.unregisterAll(this);
+            HandlerList.unregisterAll(this);
         }
     }
 }

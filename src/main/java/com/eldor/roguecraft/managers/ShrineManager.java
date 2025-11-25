@@ -10,6 +10,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.LivingEntity;
@@ -377,6 +378,11 @@ public class ShrineManager {
                 }
                 
                 ticks++;
+                
+                // Visual feedback: Spawn particles around shrine during channeling
+                if (ticks % 5 == 0 && !isCancelled.get()) {
+                    spawnChannelingParticles(shrineLoc, ticks, requiredTicks);
+                }
                 
                 // Progress indicator
                 if (ticks % 20 == 0 && !isCancelled.get()) {
@@ -1056,6 +1062,57 @@ public class ShrineManager {
      */
     public boolean isPlayerInShrineGUI(UUID playerId) {
         return playersInShrineGUI.contains(playerId);
+    }
+    
+    /**
+     * Spawn particles around shrine during channeling
+     */
+    private void spawnChannelingParticles(Location shrineLoc, int currentTicks, int requiredTicks) {
+        World world = shrineLoc.getWorld();
+        if (world == null) return;
+        
+        // Calculate progress (0.0 to 1.0)
+        double progress = Math.min(1.0, (double) currentTicks / requiredTicks);
+        
+        // Spawn particles in a circle around the shrine
+        // Increase particle count as channeling progresses
+        int particleCount = 3 + (int)(progress * 5); // 3-8 particles based on progress
+        double radius = 1.0 + (progress * 0.5); // 1.0 to 1.5 block radius
+        double height = 0.5 + (progress * 1.0); // 0.5 to 1.5 blocks above shrine
+        
+        // Spawn particles in a circle
+        for (int i = 0; i < particleCount; i++) {
+            double angle = (2 * Math.PI * i) / particleCount;
+            double x = shrineLoc.getX() + radius * Math.cos(angle);
+            double z = shrineLoc.getZ() + radius * Math.sin(angle);
+            double y = shrineLoc.getY() + height;
+            
+            Location particleLoc = new Location(world, x, y, z);
+            
+            // Use ENCHANT particles for magical effect, with some END_ROD for variety
+            Particle particleType = (i % 2 == 0) ? Particle.ENCHANT : Particle.END_ROD;
+            
+            try {
+                world.spawnParticle(particleType, particleLoc, 1, 0, 0, 0, 0);
+            } catch (Exception e) {
+                // Fallback to ENCHANT if END_ROD fails
+                try {
+                    world.spawnParticle(Particle.ENCHANT, particleLoc, 1, 0, 0, 0, 0);
+                } catch (Exception e2) {
+                    // Ignore particle errors
+                }
+            }
+        }
+        
+        // Spawn a few particles rising from the shrine center
+        if (currentTicks % 10 == 0) {
+            Location centerLoc = shrineLoc.clone().add(0, 0.5, 0);
+            try {
+                world.spawnParticle(Particle.ENCHANT, centerLoc, 2, 0.3, 0.5, 0.3, 0.1);
+            } catch (Exception e) {
+                // Ignore particle errors
+            }
+        }
     }
     
     /**
