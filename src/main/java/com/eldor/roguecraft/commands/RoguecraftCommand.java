@@ -551,18 +551,15 @@ public class RoguecraftCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 
-                int lbLimit = 10;
-                if (args.length > 1) {
-                    try {
-                        lbLimit = Integer.parseInt(args[1]);
-                        lbLimit = Math.max(1, Math.min(50, lbLimit)); // Clamp between 1 and 50
-                    } catch (NumberFormatException e) {
-                        player.sendMessage("§cInvalid number: " + args[1]);
-                        return true;
-                    }
+                // Open leaderboard GUI (always shows top 10)
+                if (!plugin.getDatabaseManager().isEnabled()) {
+                    player.sendMessage("§cDatabase storage is disabled on this server!");
+                    player.sendMessage("§7Contact an administrator to enable leaderboards.");
+                    return true;
                 }
                 
-                displayLeaderboard(player, lbLimit);
+                com.eldor.roguecraft.gui.LeaderboardGUI gui = new com.eldor.roguecraft.gui.LeaderboardGUI(plugin, player);
+                gui.open();
                 break;
             
             case "run":
